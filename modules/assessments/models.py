@@ -27,4 +27,5 @@ class AudioRecord(db.Model):
     word_accuracy = db.Column(db.Float, nullable=True)
     fluency_score = db.Column(db.Float, nullable=True)
     weak_phonemes = db.Column(db.JSON, nullable=True)  # list of weak phonemes
+    weak_words = db.Column(db.JSON, nullable=True)     # list of weak words
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
