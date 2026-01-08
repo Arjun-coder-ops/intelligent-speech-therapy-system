@@ -32,6 +32,7 @@ def create_app():
             r"/auth/*": {"origins": FRONTEND_ORIGINS},
             r"/assessment/*": {"origins": FRONTEND_ORIGINS},
             r"/practice/*": {"origins": FRONTEND_ORIGINS},  # include the spelling your frontend uses
+            r"/history/*": {"origins": FRONTEND_ORIGINS}, 
         },
         supports_credentials=True,
         expose_headers=["Content-Type", "Authorization"],
@@ -44,7 +45,7 @@ def create_app():
     app.register_blueprint(assess_bp, url_prefix="/assessment")
     app.register_blueprint(sentences_bp, url_prefix="/sentences")
     app.register_blueprint(routes_bp, url_prefix="/practice")
-    app.register_blueprint(history_bp, url_prefix="/practice")
+    app.register_blueprint(history_bp, url_prefix="/history")
 
     @app.route("/")
     def home():
