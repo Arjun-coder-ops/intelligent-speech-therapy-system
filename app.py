@@ -32,6 +32,7 @@ def create_app():
             r"/auth/*": {"origins": FRONTEND_ORIGINS},
             r"/assessment/*": {"origins": FRONTEND_ORIGINS},
             r"/practice/*": {"origins": FRONTEND_ORIGINS},  # include the spelling your frontend uses
+            r"/history/*": {"origins": FRONTEND_ORIGINS}, 
         },
         supports_credentials=True,
         expose_headers=["Content-Type", "Authorization"],
