@@ -49,15 +49,21 @@ def recommend_practice_sentences():
 
     phoneme_list = [p.strip() for p in weak_phonemes.split(',') if p.strip()]
 
-    # 2️⃣ Build prompt dynamically
+    # 🔹 Build prompt
     prompt = f"""
-    Generate ONE English practice sentence (8–12 words) for speech therapy.
+    Generate EXACTLY THREE English practice sentences (8–15 words each) for speech therapy.
 
     Focus more on these weak phonemes if possible: {phoneme_list}
-    The user struggles with {weak_words} words.
+    The user struggles with these words: {weak_words}
 
     Return ONLY valid JSON in this exact format:
-    {{"text":"","difficulty":""}}
+    {{
+      "sentences": [
+        {{"text": "", "difficulty": ""}},
+        {{"text": "", "difficulty": ""}},
+        {{"text": "", "difficulty": ""}}
+      ]
+    }}
 
     Difficulty must be easy, medium, or hard.
     """.strip()
@@ -66,7 +72,7 @@ def recommend_practice_sentences():
         "model": "mistralai/mistral-small-3.1-24b-instruct:free",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.9,
-        "max_tokens": 150
+        "max_tokens": 300
     }
 
     headers = {
@@ -83,9 +89,9 @@ def recommend_practice_sentences():
 
     content = response.json()["choices"][0]["message"]["content"]
 
-    # 3️⃣ Extract JSON safely
+    # 🔹 Safe JSON extractor
     def extract_json(text):
-        match = re.search(r'\{.*\}', text, re.DOTALL)
+        match = re.search(r'\{[\s\S]*\}', text)
         if not match:
             return None
         try:
@@ -95,22 +101,37 @@ def recommend_practice_sentences():
 
     parsed = extract_json(content)
 
-    if not parsed or "text" not in parsed:
+    if not parsed or "sentences" not in parsed:
         return jsonify({
             "error": "Invalid model response",
             "raw": content
         }), 502
 
-    # 4️⃣ Normalize difficulty
-    difficulty = parsed.get("difficulty", "medium").lower()
-    if difficulty not in ("easy", "medium", "hard"):
-        difficulty = "medium"
+    results = []
+    for item in parsed["sentences"]:
+        if "text" not in item:
+            continue
 
-    # 5️⃣ Final response (ONLY required fields)
+        difficulty = item.get("difficulty", "medium").lower()
+        if difficulty not in ("easy", "medium", "hard"):
+            difficulty = "medium"
+
+        results.append({
+            "text": item["text"].strip(),
+            "difficulty": difficulty
+        })
+
+    if len(results) != 3:
+        return jsonify({
+            "error": "Model did not return exactly 3 valid sentences",
+            "raw": content
+        }), 502
+
+    # 🔹 Final clean response
     return jsonify({
-        "text": parsed["text"].strip(),
-        "difficulty": difficulty
+        "sentences": results
     }), 200
+
 # def recommend_practice_sentences():
 #     prompt = f"""
 #     Generate ONE random English practice sentence (8–12 words) for speech practice.
