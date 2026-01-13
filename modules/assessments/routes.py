@@ -1,3 +1,12 @@
+from .services import (
+    calculate_phoneme_accuracy,
+    calculate_word_level_accuracy,
+    calculate_fluency,
+    weak_phonemes
+)
+from extensions import db
+from modules.sentences.models import Sentence
+from .models import AudioRecord
 from flask import Blueprint, request, jsonify, current_app
 from werkzeug.utils import secure_filename
 import os
@@ -10,17 +19,8 @@ import numpy as np
 # from config import OPENROUTER_API_KEY
 from dotenv import load_dotenv
 load_dotenv()
-from .models import AudioRecord
 # importing sentence model fomr sentence directory
 # from ..sentences.models import Sentence
-from modules.sentences.models import Sentence
-from extensions import db
-from .services import (
-    calculate_phoneme_accuracy,
-    calculate_word_level_accuracy,
-    calculate_fluency,
-    weak_phonemes
-)
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
@@ -28,9 +28,11 @@ assess_bp = Blueprint("assessment", __name__)
 
 ALLOWED_EXTENSIONS = {"wav", "mp3", "m4a"}
 
+
 def allowed_file(filename):
     print("Checking file:", filename)
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
 
 def convert_to_native_types(obj):
     """
@@ -50,6 +52,7 @@ def convert_to_native_types(obj):
         return tuple(convert_to_native_types(item) for item in obj)
     return obj
 
+
 @assess_bp.route("/add-sentence", methods=["POST"])
 def add_sentence():
     sentence_text = request.json.get("text")
@@ -60,11 +63,12 @@ def add_sentence():
         text=sentence_text,
         source_type='custom',
         difficulty='medium',
-        )
+    )
     db.session.add(new_sentence)
     db.session.commit()
 
     return jsonify({"message": "Sentence added successfully", "sentence_id": new_sentence.id}), 201
+
 
 @assess_bp.route("/upload", methods=["POST"])
 def upload_audio():
@@ -86,7 +90,7 @@ def upload_audio():
         return jsonify({"error": "Sentence ID missing"}), 400
 
     sentence = Sentence.query.get(sentence_id)
-    
+
     if not sentence:
         return jsonify({"error": "Invalid sentence_id"}), 404
     if not user_id:
@@ -94,8 +98,8 @@ def upload_audio():
 
     if file and allowed_file(file.filename):
         _, ext = os.path.splitext(file.filename)
-        
-        timestamp = int(time.time()) 
+
+        timestamp = int(time.time())
         filename = secure_filename(file.filename)
         filename = f"assessment_audio_{timestamp}{ext}"
         # filename = secure_filename(file.filename)
@@ -138,14 +142,16 @@ def upload_audio():
                 elif isinstance(data, (int, float)):
                     return float(data)
             except Exception as e:
-                current_app.logger.exception("Failed to summarize scores: %s", e)
+                current_app.logger.exception(
+                    "Failed to summarize scores: %s", e)
             return None
 
         # Convert detailed outputs to DB-friendly numeric values
         phoneme_accuracy = _avg_score_from_list(phoneme_data)
         word_accuracy = _avg_score_from_list(word_data)
-        
-        weak_words = [w["word"] for w in word_data if w.get("status") == "Mispronounced"]
+
+        weak_words = [w["word"]
+                      for w in word_data if w.get("status") == "Mispronounced"]
 
         # Prepare a warning if nothing useful returned
         warning = None
@@ -171,8 +177,30 @@ def upload_audio():
             "phoneme_details": phoneme_data,
             "word_details": word_data
         }
-        db.session.add(audio_record)
-        db.session.commit()
+
+        # Refresh database session before commit to handle stale connections
+        # This is crucial after long-running operations (audio processing)
+        try:
+            # Test connection and refresh if needed
+            db.session.execute(db.text("SELECT 1"))
+            db.session.add(audio_record)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.error(f"Database error during commit: {e}")
+
+            # Retry once with a fresh connection
+            try:
+                db.session.remove()  # Remove stale session
+                db.session.add(audio_record)
+                db.session.commit()
+            except Exception as retry_error:
+                db.session.rollback()
+                current_app.logger.error(f"Retry failed: {retry_error}")
+                return jsonify({
+                    "error": "Failed to save assessment results",
+                    "details": str(retry_error)
+                }), 500
 
         return jsonify({
             "message": "File uploaded and assessed successfully",
@@ -187,8 +215,8 @@ def upload_audio():
         }), 201
     else:
         return jsonify({"error": "Invalid file type"}), 400
-    
-    
+
+
 # Sentence recomondation algorithm route
 @assess_bp.route("/recommend", methods=["GET"])
 def recommend_sentence():
@@ -228,7 +256,7 @@ def recommend_sentence():
         "sentence_id": sentence.id,
         "text": sentence.text
     }), 200
-    
+
     # try:
     #     # 1. Get user assessment history
     #     assessments = AudioRecord.query.filter_by(user_id=user_id).all()
@@ -310,11 +338,10 @@ def recommend_sentence():
     #         "error": "Recommendation failed",
     #         "details": str(e)
     #     }), 500
-       
-       
+
     #    --------------------------------------------------------------------------
     # New recommendation algorithm based on weak phonemes input
-    
+
     # recent_sentences = recent_sentences or []
 
     # avoid_block = ""
@@ -332,7 +359,7 @@ def recommend_sentence():
     # Use ARPAbet phonemes.
     # Difficulty must be easy, medium, or hard.
     # """.strip()
-    
+
     # # commented
     # ''' {avoid_block}
     # """.strip()'''
@@ -425,4 +452,3 @@ def recommend_sentence():
 
     # # If model returned non-object JSON (e.g., an array), return an error
     # return jsonify({"error": "Model returned non-object JSON", "raw": content}), 502
-
