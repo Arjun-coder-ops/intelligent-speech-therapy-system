@@ -17,9 +17,6 @@ def gethistory():
         return jsonify({"message": "user_id is required"}), 400
     
     user = users.query.filter(users.id == user_id).first()
-    
-    # if not user:
-    #     return jsonify({"message": "user_id is not in the data"}), 404
 
     assess_history = AudioRecord.query.filter(
         AudioRecord.user_id == user_id).all()
