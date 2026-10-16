@@ -1,22 +1,34 @@
-# scripts/extract_embeddings.py
-import torch
-import torchaudio
-import soundfile as sf
-import numpy as np
-import librosa
+try:
+    import torch
+    import torchaudio
+    import soundfile as sf
+    import numpy as np
+    import librosa
+    HAS_DEPS = True
+except ImportError as err:
+    HAS_DEPS = False
+    torch = None
+    torchaudio = None
+    sf = None
+    np = None
+    librosa = None
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cuda" if (HAS_DEPS and torch and torch.cuda.is_available()) else "cpu"
 
 model = None
-try:
-    bundle = torchaudio.pipelines.WAV2VEC2_BASE
-    model = bundle.get_model().to(DEVICE)
-    model.eval()
-except Exception as e:
-    print(f"[Extractor] Warning: Could not load model: {e}")
+if HAS_DEPS and torchaudio is not None:
+    try:
+        bundle = torchaudio.pipelines.WAV2VEC2_BASE
+        model = bundle.get_model().to(DEVICE)
+        model.eval()
+    except Exception as e:
+        print(f"[Extractor] Warning: Could not load model: {e}")
 
-def extract_embedding(audio_path: str) -> np.ndarray:
-    if model is None: return None
+
+def extract_embedding(audio_path: str):
+    if not HAS_DEPS or model is None:
+        return None
+
     
     try:
         # 1. Load Audio

@@ -1,2 +1,2 @@
-# Backend.modules package initializer
-__all__ = ["assessments", "auth", "practice", "sentences"]
+__all__ = ["assessments", "auth", "history", "practice", "sentences"]
+

@@ -1,4 +1,5 @@
-from flask import Flask, app
+import os
+from flask import Flask, jsonify
 from flask_cors import CORS
 
 from config import Config
@@ -11,34 +12,39 @@ from modules.practice.routes import routes_bp
 from modules.history.routes import history_bp
 
 
-def create_app():
+def create_app(config_class=Config):
     app = Flask(__name__)
-    app.config.from_object(Config)
+    app.config.from_object(config_class)
+
+    # Ensure upload directory exists
+    upload_folder = app.config.get("UPLOAD_FOLDER", "uploads")
+    os.makedirs(upload_folder, exist_ok=True)
 
     # Extensions
     db.init_app(app)
     jwt.init_app(app)
     bcrypt.init_app(app)
     migrate.init_app(app, db)
-    # from flask_cors import CORS
 
-    # allow only the Vite origin and cookies
-    FRONTEND_ORIGINS = "http://localhost:5173"
+    # CORS configuration - support configured origins and common dev ports
+    raw_origins = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_ORIGIN") or "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
+    frontend_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
     CORS(
         app,
         resources={
-            r"/*": {"origins": FRONTEND_ORIGINS},
-            r"/auth/*": {"origins": FRONTEND_ORIGINS},
-            r"/assessment/*": {"origins": FRONTEND_ORIGINS},
-            r"/practice/*": {"origins": FRONTEND_ORIGINS},  # include the spelling your frontend uses
-            r"/history/*": {"origins": FRONTEND_ORIGINS}, 
+            r"/*": {"origins": frontend_origins},
+            r"/auth/*": {"origins": frontend_origins},
+            r"/assessment/*": {"origins": frontend_origins},
+            r"/sentences/*": {"origins": frontend_origins},
+            r"/practice/*": {"origins": frontend_origins},
+            r"/history/*": {"origins": frontend_origins},
         },
         supports_credentials=True,
         expose_headers=["Content-Type", "Authorization"],
         allow_headers=["Content-Type", "Authorization"],
-        methods=["GET", "POST", "OPTIONS"]
-    )  # CORS(app)
+        methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    )
 
     # Blueprints
     app.register_blueprint(auth_bp, url_prefix="/auth")
@@ -49,9 +55,20 @@ def create_app():
 
     @app.route("/")
     def home():
-        return "This is the home page."
+        return jsonify({
+            "status": "online",
+            "message": "Intelligent Speech Therapy Platform API is running",
+            "endpoints": {
+                "auth": "/auth",
+                "assessment": "/assessment",
+                "practice": "/practice",
+                "sentences": "/sentences",
+                "history": "/history"
+            }
+        }), 200
 
     return app
+
 
 
 if __name__ == "__main__":

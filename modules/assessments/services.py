@@ -1,25 +1,21 @@
-import librosa
-import random
 import logging
 import traceback
 
-# Robust import: prefer package-relative import to the Backend root; fall back to importlib
+# Robust import: try local module first, then package-relative
 mi = None
 try:
-    # Go up two levels from assessments -> Backend
-    from ... import model_interface as mi  # type: ignore
+    import model_interface as mi
 except Exception as e:
-    logging.warning("Relative import from package failed: %s", e)
-    import importlib
     try:
-        mi = importlib.import_module("Backend.model_interface")
+        from ... import model_interface as mi  # type: ignore
     except Exception as e2:
-        logging.warning("importlib import Backend.model_interface failed: %s", e2)
         try:
+            import importlib
             mi = importlib.import_module("model_interface")
         except Exception as e3:
-            logging.exception("Failed to import model_interface by any method: %s", e3)
+            logging.warning("model_interface not available; audio models disabled: %s", e3)
             mi = None
+
 
 if mi is not None:
     mi_calc_phoneme_accuracy = getattr(mi, 'calculate_phoneme_accuracy', None)

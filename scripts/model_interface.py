@@ -1,26 +1,72 @@
 import os
 import sys
-import torch
-import torchaudio
-import soundfile as sf
-import numpy as np
-import librosa
-import stable_whisper
-from scipy.spatial.distance import cosine
+import logging
 from pathlib import Path
 
+# Safe imports for AI dependencies
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import torch
+    import torchaudio
+    import soundfile as sf
+    import librosa
+    import stable_whisper
+    from scipy.spatial.distance import cosine
+    AI_DEPS_AVAILABLE = True
+except ImportError as _err:
+    logging.warning("AI audio dependencies not fully installed: %s. Processing will run in fallback mode.", _err)
+    torch = None
+    torchaudio = None
+    sf = None
+    librosa = None
+    stable_whisper = None
+    cosine = None
+    AI_DEPS_AVAILABLE = False
+
 # --- FIX 1: Correct Path Logic ---
-# Previous code pointed to scripts/models. We need the Project Root.
-ROOT = Path(__file__).resolve().parent.parent 
+# Use package (Backend) directory as root to locate models and scripts reliably
+ROOT = Path(__file__).resolve().parent
 EMB_DIR = ROOT / "models" / "embeddings"
+# Ensure scripts inside Backend are importable
 sys.path.append(str(ROOT / "scripts"))
 
-# Import your existing extraction logic
+def embdir():
+    return EMB_DIR
+
+# Import existing extraction logic (robust fallback)
+extract_embedding = None
+# 1) Try package-relative import (Backend.scripts.extract_embeddings)
 try:
-    from extract_embeddings import extract_embedding
-except ImportError:
-    print("[API] Warning: extract_embeddings not found in scripts/, using fallback.")
-    pass
+    from .scripts.extract_embeddings import extract_embedding as _extract_embedding
+    extract_embedding = _extract_embedding
+except Exception:
+    # 2) Try absolute import from scripts package
+    try:
+        from scripts.extract_embeddings import extract_embedding as _extract_embedding
+        extract_embedding = _extract_embedding
+    except Exception:
+        # 3) Try importing module names dynamically
+        import importlib
+        try:
+            mod = importlib.import_module("scripts.extract_embeddings")
+            extract_embedding = getattr(mod, "extract_embedding", None)
+        except Exception:
+            try:
+                mod = importlib.import_module("extract_embeddings")
+                extract_embedding = getattr(mod, "extract_embedding", None)
+            except Exception as e:
+                logging.warning("extract_embeddings import failed; extraction disabled: %s", e)
+                extract_embedding = None
+
+# 4) Final safe stub so the rest of the module can operate even if extraction is missing
+if extract_embedding is None:
+    def extract_embedding(audio_path: str):
+        logging.warning("extract_embedding is unavailable; called with %s", audio_path)
+        return None
 
 class SpeechTherapyModel:
     _instance = None
@@ -33,23 +79,51 @@ class SpeechTherapyModel:
 
     def _initialize_models(self):
         print("[Model] Loading AI Models... (This happens once)")
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # 1. Load Whisper (Alignment & Fluency)
-        self.align_model = stable_whisper.load_model("medium", device=self.device)
-        
-        # 2. Load Wav2Vec2 (Scoring)
-        bundle = torchaudio.pipelines.WAV2VEC2_BASE
-        self.extractor = bundle.get_model().to(self.device)
-        self.extractor.eval()
-        
-        # 3. Pre-load Reference Embeddings (The "Centroids")
+        self.align_model = None
+        self.extractor = None
         self.references = {}
-        if EMB_DIR.exists():
-            for f in os.listdir(EMB_DIR):
-                if f.endswith(".npy"):
-                    phoneme = f.replace(".npy", "")
-                    self.references[phoneme] = np.load(EMB_DIR / f)
+        self.device = "cpu"
+
+        if not AI_DEPS_AVAILABLE:
+            print("[Model] Warning: AI libraries not available. Model features will be limited.")
+            self.cache = {
+                "path": None,
+                "phoneme_data": [],
+                "word_data": [],
+                "fluency": 0,
+                "weak_list": []
+            }
+            return
+
+        try:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            self.device = "cpu"
+
+        # 1. Load Whisper (Alignment & Fluency)
+        try:
+            self.align_model = stable_whisper.load_model("small", device=self.device)
+        except Exception as e:
+            logging.warning("[Model] Whisper model failed to load: %s", e)
+
+        # 2. Load Wav2Vec2 (Scoring)
+        try:
+            bundle = torchaudio.pipelines.WAV2VEC2_BASE
+            self.extractor = bundle.get_model().to(self.device)
+            self.extractor.eval()
+        except Exception as e:
+            logging.warning("[Model] Wav2Vec2 model failed to load: %s", e)
+
+        # 3. Pre-load Reference Embeddings (The "Centroids")
+        if EMB_DIR.exists() and np is not None:
+            for f in EMB_DIR.iterdir():
+                if f.suffix == ".npy":
+                    phoneme = f.stem
+                    try:
+                        self.references[phoneme] = np.load(f)
+                    except Exception as e:
+                        logging.warning("Failed to load reference %s: %s", f, e)
+
         
         count = len(self.references)
         print(f"[Model] Loaded {count} reference phonemes from {EMB_DIR}")
@@ -85,14 +159,69 @@ class SpeechTherapyModel:
 
         print(f"[Model] Processing: {audio_path}")
         
-        # 1. Load Audio
-        wav, sr = sf.read(audio_path, dtype="float32")
-        if wav.ndim > 1: wav = wav.mean(axis=1)
+        # 1. Load Audio with robust fallbacks
+        wav = None
+        sr = None
+        try:
+            wav, sr = sf.read(audio_path, dtype="float32")
+        except Exception as e:
+            logging.warning("soundfile failed to read %s: %s. Falling back to librosa.", audio_path, e)
+            try:
+                # librosa will load & resample if sr is set
+                wav, sr = librosa.load(audio_path, sr=16000, mono=False)
+            except Exception as e2:
+                logging.warning("librosa failed to read %s: %s. Trying pydub if available.", audio_path, e2)
+                try:
+                    from pydub import AudioSegment
+                    ad = AudioSegment.from_file(audio_path)
+                    samples = np.array(ad.get_array_of_samples()).astype('float32')
+                    if ad.channels > 1:
+                        samples = samples.reshape((-1, ad.channels)).mean(axis=1)
+                    # Normalize pydub integer samples to -1..1 depending on sample width
+                    max_val = float(1 << (8 * ad.sample_width - 1))
+                    wav = samples / max_val
+                    sr = ad.frame_rate
+                except Exception as e3:
+                    logging.exception("All audio loaders failed for %s: %s", audio_path, e3)
+                    # Provide a short silent buffer to avoid crashes downstream
+                    wav = np.zeros(1600, dtype="float32")
+                    sr = 16000
+
+        # Ensure mono
+        if wav is None:
+            wav = np.zeros(1600, dtype="float32")
+            sr = 16000
+        if hasattr(wav, 'ndim') and wav.ndim > 1:
+            wav = wav.mean(axis=1)
+
+        # Ensure correct sample rate
         if sr != 16000:
-            wav = librosa.resample(wav, orig_sr=sr, target_sr=16000)
+            try:
+                wav = librosa.resample(wav, orig_sr=sr, target_sr=16000)
+                sr = 16000
+            except Exception as e:
+                logging.exception("Failed to resample %s from %s to 16000: %s", audio_path, sr, e)
+                # If resample fails, reassign sr to 16000 and proceed (buffer length-based durations still work approximately)
+                sr = 16000
             
         # 2. Alignment
-        transcript = self.align_model.transcribe(audio_path, word_timestamps=True)
+        try:
+            transcript = self.align_model.transcribe(audio_path, word_timestamps=True)
+            if not transcript or not getattr(transcript, "segments", None):
+                print("[Model] No segments returned by Whisper")
+
+        except FileNotFoundError as e:
+            import traceback
+            print("[Model] FFmpeg/ffprobe not found on PATH. Please install FFmpeg and ensure ffmpeg and ffprobe are accessible.\nSee https://ffmpeg.org/download.html")
+            print(traceback.format_exc())
+            # Create an empty transcript object with segments=[] so the processing continues safely
+            transcript = type("T", (), {})()
+            transcript.segments = []
+        except Exception:
+            import traceback
+            print(f"[Model] Error during alignment for {audio_path}:\n{traceback.format_exc()}")
+            transcript = type("T", (), {})()
+            transcript.segments = []
         
         total_duration = len(wav) / 16000
         speech_duration = 0
@@ -102,8 +231,14 @@ class SpeechTherapyModel:
         # Robust Segment Extraction
         segments = transcript.segments if hasattr(transcript, 'segments') else transcript.get('segments', [])
         
-        from g2p_en import G2p
-        g2p = G2p()
+        # Initialize g2p lazily and handle missing NLTK data gracefully
+        try:
+            from g2p_en import G2p
+            if not hasattr(self, 'g2p') or self.g2p is None:
+                self.g2p = G2p()
+        except Exception as e:
+            logging.warning("Could not initialize G2p at import time: %s", e)
+            self.g2p = None
 
         for seg in segments:
             # FIX 2: Safe Word Extraction (Handles both Objects and Dicts)
@@ -127,8 +262,29 @@ class SpeechTherapyModel:
                 
                 speech_duration += (end - start)
                 
-                # Get Phonemes
-                raw_phonemes = g2p(text)
+                # Get Phonemes with robust NLTK handling
+                try:
+                    if getattr(self, 'g2p', None) is None:
+                        from g2p_en import G2p
+                        self.g2p = G2p()
+                    raw_phonemes = self.g2p(text)
+                except LookupError as e:
+                    logging.warning("NLTK resource missing when processing word '%s': %s. Attempting automatic download.", text, e)
+                    try:
+                        import nltk
+                        nltk.download('averaged_perceptron_tagger_eng', quiet=True)
+                        nltk.download('punkt', quiet=True)
+                    except Exception as nd_e:
+                        logging.exception("Failed to download NLTK resources: %s", nd_e)
+                    try:
+                        raw_phonemes = self.g2p(text)
+                    except Exception as e2:
+                        logging.exception("g2p failed after downloading NLTK resources for word '%s': %s", text, e2)
+                        raw_phonemes = list(text)
+                except Exception as e:
+                    logging.exception("g2p failed for word '%s': %s", text, e)
+                    raw_phonemes = list(text)
+
                 clean_phonemes = [p for p in raw_phonemes if p not in [' ', 'NB', ',', '.', '!', '?']]
                 
                 p_len = len(clean_phonemes)
@@ -198,29 +354,72 @@ class SpeechTherapyModel:
         self.cache["weak_list"] = weak_list
 
 
-# --- THE API FUNCTIONS ---
-_backend = SpeechTherapyModel()
+# --- THE API FUNCTIONS (Lazy initialized) ---
+_backend = None
+
+def get_backend():
+    global _backend
+    if _backend is None:
+        try:
+            _backend = SpeechTherapyModel()
+        except Exception as e:
+            logging.error(f"[Model] Could not initialize SpeechTherapyModel: {e}")
+            _backend = None
+    return _backend
 
 def calculate_phoneme_accuracy(audio_path):
-    _backend._process_audio(audio_path)
-    return _backend.cache["phoneme_data"]
+    try:
+        backend = get_backend()
+        if backend is None:
+            return []
+        backend._process_audio(audio_path)
+        return backend.cache.get("phoneme_data", [])
+    except Exception:
+        import traceback
+        print(f"[Model] Error in calculate_phoneme_accuracy for {audio_path}:\n{traceback.format_exc()}")
+        return []
 
 def calculate_word_level_accuracy(audio_path):
-    _backend._process_audio(audio_path)
-    return _backend.cache["word_data"]
+    try:
+        backend = get_backend()
+        if backend is None:
+            return []
+        backend._process_audio(audio_path)
+        return backend.cache.get("word_data", [])
+    except Exception:
+        import traceback
+        print(f"[Model] Error in calculate_word_level_accuracy for {audio_path}:\n{traceback.format_exc()}")
+        return []
 
 def calculate_fluency(audio_path):
-    _backend._process_audio(audio_path)
-    return _backend.cache["fluency"]
+    try:
+        backend = get_backend()
+        if backend is None:
+            return 0
+        backend._process_audio(audio_path)
+        return backend.cache.get("fluency", 0)
+    except Exception:
+        import traceback
+        print(f"[Model] Error in calculate_fluency for {audio_path}:\n{traceback.format_exc()}")
+        return 0
 
 def weak_phonemes(audio_path):
-    _backend._process_audio(audio_path)
-    return _backend.cache["weak_list"]
+    try:
+        backend = get_backend()
+        if backend is None:
+            return []
+        backend._process_audio(audio_path)
+        return backend.cache.get("weak_list", [])
+    except Exception:
+        import traceback
+        print(f"[Model] Error in weak_phonemes for {audio_path}:\n{traceback.format_exc()}")
+        return []
+
 
 # --- TEST BLOCK ---
 if __name__ == "__main__":
     # Update this path if needed to point to your test file
-    test_file = str(ROOT / "data" / "user_audio" / "test_user2.wav")
+    test_file = str(ROOT / "uploads" / "assessment_audio_1766897722.wav")
     
     if os.path.exists(test_file):
         print("\n--- API TEST RESULTS ---")

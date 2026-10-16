@@ -112,21 +112,15 @@ OPENAI_API_KEY=your-openai-api-key-here
 - Generate strong secret keys using: `python -c "import secrets; print(secrets.token_hex(32))"`
 - Ensure PostgreSQL is running and the database exists
 
-#### 5. Initialize Database
+#### 5. Initialize and Seed Database
 ```bash
-# Apply all migrations
-flask db upgrade
-
-# Or using Alembic directly
-alembic upgrade head
+# Initialize schema and seed default sentences (supports both PostgreSQL and SQLite fallback)
+python scripts/seed_database.py
 ```
 
-#### 6. Create Database Schema
+#### 6. Run Test Suite (Optional)
 ```bash
-flask shell
->>> from extensions import db
->>> db.create_all()
->>> exit()
+python tests/test_api.py
 ```
 
 ---
@@ -138,15 +132,7 @@ flask shell
 # Option 1: Using Flask directly
 python app.py
 
-# Option 1: Using Flask directly
-flask run
-
-# Option 2: Using Python
-python -m flask run
-
-# Option 3: With debug mode enabled
-set FLASK_ENV=development  # Windows
-export FLASK_ENV=development  # macOS/Linux
+# Option 2: Using Flask CLI
 flask run
 ```
 
@@ -154,7 +140,7 @@ The API will be available at: **http://localhost:5000**
 
 ### Production Server
 ```bash
-# Using Gunicorn (recommended for production)
+# Using Gunicorn (recommended for production on Linux)
 pip install gunicorn
 gunicorn -w 4 -b 0.0.0.0:5000 "app:create_app()"
 ```
@@ -164,25 +150,29 @@ gunicorn -w 4 -b 0.0.0.0:5000 "app:create_app()"
 ## 📡 API Endpoints
 
 ### Authentication (`/auth`)
-- `POST /auth/register` - User registration
-- `POST /auth/login` - User login
+- `POST /auth/register` - User registration (`fullName`, `email`, `password`, `confirmPassword`)
+- `POST /auth/login` - User login (`email`, `password`) -> Returns JWT access token
+- `GET /auth/me` - Get current user profile (requires `Bearer <token>`)
 
 ### Assessment (`/assessment`)
-- `POST /assessment/upload` - Upload and analyze speech
-- `GET /assessment/results/<id>` - Get assessment results
-- `GET /assessment/history` - Get all assessments
+- `POST /assessment/upload` - Upload and analyze speech (multipart/form-data: `audio`, `sentence_id`, `user_id`)
+- `GET /assessment/results/<id>` - Get specific assessment results
+- `GET /assessment/history?user_id=<id>` - Get assessment history
+- `GET /assessment/recommend?user_id=<id>` - Recommend a new sentence for the user
 
 ### Practice (`/practice`)
-- `POST /practice/recomond?weeak_phonemes` - Recomonds the weak Phonemes
-- `POST /practice/submit` - Submit practice response
+- `GET /practice/recommendation?weak_phonemes=<list>&weak_words=<list>` - Get 3 practice sentences (supports GET/POST)
+- `POST /practice/submit` - Submit practice speech audio for evaluation
 
 ### Sentences (`/sentences`)
-- `GET /sentences` - Get all available sentences
-- `GET /sentences/<id>` - Get specific sentence
-- `POST /sentences` - Create new sentence (admin)
+- `GET /sentences` - Get all available sentences (filter by `difficulty`, `source_type`)
+- `GET /sentences/<id>` - Get specific sentence by ID
+- `POST /sentences` - Create a new sentence (`text` or `sentence`, `difficulty`, `source_type`)
+- `POST /sentences/add-bulk-sentences` - Bulk upload sentences array
 
 ### History (`/history`)
-- `GET /history/prev_res?user_id` - Get user progress summary
+- `GET /history/prev_res?user_id=<id>` - Get user speech progress summary (also `/history/prev_results`)
+
 
 ---
 

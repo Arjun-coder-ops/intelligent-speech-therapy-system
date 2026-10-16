@@ -4,13 +4,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 EMB_FILE = ROOT / "metadata" / "phoneme_embeddings.npy"
-INDEX_FILE = ROOT / "metadata" / "phoneme_embeddings_index"
+INDEX_FILE = ROOT / "metadata" / "phoneme_embeddings_index.json"
+if not INDEX_FILE.exists():
+    INDEX_FILE = ROOT / "metadata" / "phoneme_embeddings_index"
 OUT_DIR = ROOT / "metadata" / "embeddings"
 
 def main():
     if not EMB_FILE.exists() or not INDEX_FILE.exists():
-        print("Missing embeddings or index file.")
+        print(f"Missing embeddings ({EMB_FILE}) or index file ({INDEX_FILE}).")
         return
+
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 

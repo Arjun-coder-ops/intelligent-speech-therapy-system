@@ -85,11 +85,14 @@ def main():
     
     report = {
         "Overall_score": final_score,
-        "Week_phonemes": weak_phonemes,
-        "Week_words": weak_words,
+        "Weak_phonemes": weak_phonemes,
+        "Weak_words": weak_words,
+        "Week_phonemes": weak_phonemes,  # Legacy key compatibility
+        "Week_words": weak_words,        # Legacy key compatibility
         "Analysis_Summary": mistakes[:5], 
         "Detailed_Word_Report": processed_words
     }
+
     
     with open(OUT_FILE, "w") as f:
         json.dump(report, f, indent=2)

@@ -1,14 +1,31 @@
 import os
 import sys
 import logging
-import torch
-import torchaudio
-import soundfile as sf
-import numpy as np
-import librosa
-import stable_whisper
-from scipy.spatial.distance import cosine
 from pathlib import Path
+
+# Safe imports for AI dependencies
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import torch
+    import torchaudio
+    import soundfile as sf
+    import librosa
+    import stable_whisper
+    from scipy.spatial.distance import cosine
+    AI_DEPS_AVAILABLE = True
+except ImportError as _err:
+    logging.warning("AI audio dependencies not fully installed: %s. Processing will run in fallback mode.", _err)
+    torch = None
+    torchaudio = None
+    sf = None
+    librosa = None
+    stable_whisper = None
+    cosine = None
+    AI_DEPS_AVAILABLE = False
 
 # --- FIX 1: Correct Path Logic ---
 # Use package (Backend) directory as root to locate models and scripts reliably
@@ -20,7 +37,7 @@ sys.path.append(str(ROOT / "scripts"))
 def embdir():
     return EMB_DIR
 
-# Import your existing extraction logic (robust fallback)
+# Import existing extraction logic (robust fallback)
 extract_embedding = None
 # 1) Try package-relative import (Backend.scripts.extract_embeddings)
 try:
@@ -62,23 +79,51 @@ class SpeechTherapyModel:
 
     def _initialize_models(self):
         print("[Model] Loading AI Models... (This happens once)")
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # 1. Load Whisper (Alignment & Fluency)
-        self.align_model = stable_whisper.load_model("small", device=self.device)
-        
-        # 2. Load Wav2Vec2 (Scoring)
-        bundle = torchaudio.pipelines.WAV2VEC2_BASE
-        self.extractor = bundle.get_model().to(self.device)
-        self.extractor.eval()
-        
-        # 3. Pre-load Reference Embeddings (The "Centroids")
+        self.align_model = None
+        self.extractor = None
         self.references = {}
-        if EMB_DIR.exists():
+        self.device = "cpu"
+
+        if not AI_DEPS_AVAILABLE:
+            print("[Model] Warning: AI libraries not available. Model features will be limited.")
+            self.cache = {
+                "path": None,
+                "phoneme_data": [],
+                "word_data": [],
+                "fluency": 0,
+                "weak_list": []
+            }
+            return
+
+        try:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            self.device = "cpu"
+
+        # 1. Load Whisper (Alignment & Fluency)
+        try:
+            self.align_model = stable_whisper.load_model("small", device=self.device)
+        except Exception as e:
+            logging.warning("[Model] Whisper model failed to load: %s", e)
+
+        # 2. Load Wav2Vec2 (Scoring)
+        try:
+            bundle = torchaudio.pipelines.WAV2VEC2_BASE
+            self.extractor = bundle.get_model().to(self.device)
+            self.extractor.eval()
+        except Exception as e:
+            logging.warning("[Model] Wav2Vec2 model failed to load: %s", e)
+
+        # 3. Pre-load Reference Embeddings (The "Centroids")
+        if EMB_DIR.exists() and np is not None:
             for f in EMB_DIR.iterdir():
                 if f.suffix == ".npy":
                     phoneme = f.stem
-                    self.references[phoneme] = np.load(f)
+                    try:
+                        self.references[phoneme] = np.load(f)
+                    except Exception as e:
+                        logging.warning("Failed to load reference %s: %s", f, e)
+
         
         count = len(self.references)
         print(f"[Model] Loaded {count} reference phonemes from {EMB_DIR}")
@@ -309,13 +354,26 @@ class SpeechTherapyModel:
         self.cache["weak_list"] = weak_list
 
 
-# --- THE API FUNCTIONS ---
-_backend = SpeechTherapyModel()
+# --- THE API FUNCTIONS (Lazy initialized) ---
+_backend = None
+
+def get_backend():
+    global _backend
+    if _backend is None:
+        try:
+            _backend = SpeechTherapyModel()
+        except Exception as e:
+            logging.error(f"[Model] Could not initialize SpeechTherapyModel: {e}")
+            _backend = None
+    return _backend
 
 def calculate_phoneme_accuracy(audio_path):
     try:
-        _backend._process_audio(audio_path)
-        return _backend.cache["phoneme_data"]
+        backend = get_backend()
+        if backend is None:
+            return []
+        backend._process_audio(audio_path)
+        return backend.cache.get("phoneme_data", [])
     except Exception:
         import traceback
         print(f"[Model] Error in calculate_phoneme_accuracy for {audio_path}:\n{traceback.format_exc()}")
@@ -323,8 +381,11 @@ def calculate_phoneme_accuracy(audio_path):
 
 def calculate_word_level_accuracy(audio_path):
     try:
-        _backend._process_audio(audio_path)
-        return _backend.cache["word_data"]
+        backend = get_backend()
+        if backend is None:
+            return []
+        backend._process_audio(audio_path)
+        return backend.cache.get("word_data", [])
     except Exception:
         import traceback
         print(f"[Model] Error in calculate_word_level_accuracy for {audio_path}:\n{traceback.format_exc()}")
@@ -332,8 +393,11 @@ def calculate_word_level_accuracy(audio_path):
 
 def calculate_fluency(audio_path):
     try:
-        _backend._process_audio(audio_path)
-        return _backend.cache["fluency"]
+        backend = get_backend()
+        if backend is None:
+            return 0
+        backend._process_audio(audio_path)
+        return backend.cache.get("fluency", 0)
     except Exception:
         import traceback
         print(f"[Model] Error in calculate_fluency for {audio_path}:\n{traceback.format_exc()}")
@@ -341,12 +405,16 @@ def calculate_fluency(audio_path):
 
 def weak_phonemes(audio_path):
     try:
-        _backend._process_audio(audio_path)
-        return _backend.cache["weak_list"]
+        backend = get_backend()
+        if backend is None:
+            return []
+        backend._process_audio(audio_path)
+        return backend.cache.get("weak_list", [])
     except Exception:
         import traceback
         print(f"[Model] Error in weak_phonemes for {audio_path}:\n{traceback.format_exc()}")
         return []
+
 
 # --- TEST BLOCK ---
 if __name__ == "__main__":
