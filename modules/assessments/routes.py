@@ -71,12 +71,13 @@ def add_sentence():
 
 
 @assess_bp.route("/upload", methods=["POST"])
+@jwt_required(optional=True)
 def upload_audio():
     if "audio" not in request.files:
         return jsonify({"error": "No audio file part in the request"}), 400
 
     file = request.files["audio"]
-    user_id = request.form.get("user_id")
+    user_id = request.form.get("user_id") or get_jwt_identity()
     sentence_id = request.form.get("sentence_id")
 
     if not file or file.filename == "":
