@@ -174,10 +174,16 @@ def execute_assessment_job(app, job_id: str):
         except Exception as e:
             db.session.rollback()
             logging.exception("Async assessment job %s failed: %s", job_id, e)
-            job.status = "failed"
-            job.error_message = str(e)
-            job.completed_at = datetime.utcnow()
-            db.session.commit()
+            try:
+                failed_job = db.session.get(AssessmentJob, job_id)
+                if failed_job:
+                    failed_job.status = "failed"
+                    failed_job.error_message = str(e)
+                    failed_job.completed_at = datetime.utcnow()
+                    db.session.commit()
+            except Exception as inner_e:
+                logging.error("Failed to record failure for job %s: %s", job_id, inner_e)
+                db.session.rollback()
             metrics_collector.record_inference(time.time() - start_time, "failed")
         finally:
             metrics_collector.record_job_status(-1)
@@ -186,5 +192,36 @@ def execute_assessment_job(app, job_id: str):
 def queue_async_assessment(app, job_id: str):
     """Enqueue assessment job into background thread pool."""
     _job_executor.submit(execute_assessment_job, app, job_id)
+
+
+def recover_stale_jobs(app):
+    """
+    On application startup, transition any jobs that were left in 'queued' or 'processing'
+    state (due to server restart or process crash) into a terminal 'failed' state.
+    Prevents jobs from remaining stuck indefinitely in in-process thread pool architecture.
+    """
+    from extensions import db
+    from modules.assessments.models import AssessmentJob
+    from sqlalchemy import inspect
+
+    with app.app_context():
+        try:
+            inspector = inspect(db.engine)
+            if not inspector.has_table("assessment_jobs"):
+                return
+            stale_jobs = AssessmentJob.query.filter(
+                AssessmentJob.status.in_(["queued", "processing"])
+            ).all()
+            for job in stale_jobs:
+                job.status = "failed"
+                job.error_message = "Worker process terminated before job completion (server restart)"
+                job.completed_at = datetime.utcnow()
+            if stale_jobs:
+                db.session.commit()
+                logging.warning("Recovered %d orphaned assessment jobs on startup.", len(stale_jobs))
+        except Exception as e:
+            db.session.rollback()
+            logging.error("Failed to recover stale assessment jobs: %s", e)
+
 
 

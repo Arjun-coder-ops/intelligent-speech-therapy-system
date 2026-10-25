@@ -79,8 +79,10 @@ def create_app(config_class=Config):
     with app.app_context():
         try:
             db.create_all()
+            from modules.assessments.services import recover_stale_jobs
+            recover_stale_jobs(app)
         except Exception as e:
-            app.logger.warning("db.create_all() encountered exception: %s", e)
+            app.logger.warning("Startup database initialization/recovery encountered exception: %s", e)
 
     return app
 

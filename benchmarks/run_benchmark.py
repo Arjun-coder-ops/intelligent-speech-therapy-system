@@ -149,17 +149,39 @@ def run_benchmark():
         "size": cache.size()
     }
 
-    # 3. Benchmark Asynchronous Job Processing
+    # 3. Synchronous vs Asynchronous Audio Assessment Comparison
     print("\n" + "=" * 60)
-    print("RUNNING ASYNC JOB ENQUEUE & EXECUTION BENCHMARK")
+    print("RUNNING SYNC VS ASYNC AUDIO ASSESSMENT COMPARISON")
     print("=" * 60)
 
     audio_file_path = ROOT / "data" / "reference_audio" / "phonemes" / "word_000_red.wav"
     audio_data = audio_file_path.read_bytes() if audio_file_path.exists() else b"RIFF"
 
+    job_count = 5
+    sync_latencies = []
+    user_id_val = login.get_json()["id"]
+
+    for idx in range(job_count):
+        t0 = time.perf_counter()
+        data = {
+            "sentence_id": str(sentence_id),
+            "user_id": str(user_id_val),
+            "audio": (io.BytesIO(audio_data), f"sync_bench_{idx}.wav", "audio/wav")
+        }
+        res = client.post(
+            "/assessment/upload",
+            data=data,
+            headers=headers,
+            content_type="multipart/form-data"
+        )
+        sync_latencies.append((time.perf_counter() - t0) * 1000.0)
+
+    sync_latencies.sort()
+    sync_p50 = sync_latencies[len(sync_latencies) // 2]
+    print(f"[Synchronous Upload] Client Blocking p50: {sync_p50:.2f}ms")
+
     job_enqueue_latencies = []
     job_completion_times = []
-    job_count = 5
 
     for idx in range(job_count):
         t0 = time.perf_counter()
@@ -196,13 +218,15 @@ def run_benchmark():
     enq_p50 = job_enqueue_latencies[len(job_enqueue_latencies) // 2]
     comp_p50 = job_completion_times[len(job_completion_times) // 2]
 
-    print(f"[Async Job Enqueue] p50: {enq_p50:.2f}ms (HTTP 202 response to client)")
-    print(f"[Async Job Total Completion] p50: {comp_p50:.2f}ms (background worker execution)")
+    print(f"[Async Job Enqueue] Client Response p50: {enq_p50:.2f}ms (HTTP 202 Accepted)")
+    print(f"[Async Job Total Completion] Background Worker p50: {comp_p50:.2f}ms")
 
-    results["async_job_performance"] = {
+    results["assessment_comparison"] = {
         "job_count": job_count,
-        "enqueue_latency_p50_ms": round(enq_p50, 2),
-        "job_completion_time_p50_ms": round(comp_p50, 2)
+        "sync_client_blocking_p50_ms": round(sync_p50, 2),
+        "async_enqueue_client_latency_p50_ms": round(enq_p50, 2),
+        "async_background_completion_p50_ms": round(comp_p50, 2),
+        "latency_reduction_factor": round(sync_p50 / enq_p50, 2) if enq_p50 > 0 else "N/A"
     }
 
     # Save reports
@@ -220,6 +244,10 @@ def run_benchmark():
         f"- **Timestamp:** `{results['benchmark_metadata']['timestamp']}`",
         f"- **Platform:** `{results['benchmark_metadata']['platform']}`",
         f"- **Python Version:** `{results['benchmark_metadata']['python_version']}`",
+        "",
+        "> [!NOTE]",
+        "> **Benchmark Scope & Limitations:** ML tensor operations were evaluated in lightweight fallback mode (without heavy CUDA Whisper/Wav2Vec2 weights).",
+        "> These measurements characterize the HTTP API gateway, database ORM transactions, LRU cache operations, and async thread pool dispatch latency.",
         "",
         "## 1. HTTP Endpoint Latency & Throughput",
         "| Endpoint | Iterations | p50 (ms) | p90 (ms) | p95 (ms) | p99 (ms) | Throughput (req/s) | Error Rate |",
@@ -239,10 +267,11 @@ def run_benchmark():
         f"- **Lookup p95:** `{results['cache_performance']['p95_lookup_microseconds']} µs`",
         f"- **Cache Capacity:** `{results['cache_performance']['capacity']}` entries",
         "",
-        "## 3. Asynchronous Job Processing Benchmark",
-        f"- **Enqueue Latency (Client HTTP 202):** `{results['async_job_performance']['enqueue_latency_p50_ms']} ms`",
-        f"- **Background Completion Time (p50):** `{results['async_job_performance']['job_completion_time_p50_ms']} ms`",
-        f"- **Client Non-Blocking Improvement:** Reduces synchronous request blocking to sub-30ms enqueue response."
+        "## 3. Synchronous vs Asynchronous Audio Assessment Comparison",
+        f"- **Synchronous Client Blocking Latency (p50):** `{results['assessment_comparison']['sync_client_blocking_p50_ms']} ms`",
+        f"- **Asynchronous Enqueue Latency (Client HTTP 202 p50):** `{results['assessment_comparison']['async_enqueue_client_latency_p50_ms']} ms`",
+        f"- **Background Worker Execution Time (p50):** `{results['assessment_comparison']['async_background_completion_p50_ms']} ms`",
+        f"- **Client Blocking Time Reduction:** Synchronous requests hold the client thread for the full execution cycle, whereas asynchronous submission returns an HTTP 202 in `{results['assessment_comparison']['async_enqueue_client_latency_p50_ms']} ms`."
     ])
 
     with open(md_path, "w", encoding="utf-8") as f:

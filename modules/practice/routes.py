@@ -168,21 +168,28 @@ def recommend_practice_sentences():
         "Content-Type": "application/json"
     }
 
-    # Bounded retries with exponential backoff & jitter for transient failures
+    # Bounded retries with exponential backoff & jitter and total timeout budget
     max_retries = 2
     base_delay = 0.5
+    total_timeout_budget = 15.0
     response = None
     parsed = None
     fallback_reason = None
     start_llm = time.time()
 
     for attempt in range(max_retries + 1):
+        elapsed = time.time() - start_llm
+        remaining_timeout = max(1.0, total_timeout_budget - elapsed)
+        if remaining_timeout <= 1.5 and attempt > 0:
+            fallback_reason = "provider_timeout_budget_exhausted"
+            break
+
         try:
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 json=payload,
                 headers=headers,
-                timeout=15
+                timeout=remaining_timeout
             )
 
             # Check for transient rate limit or gateway error
@@ -202,13 +209,15 @@ def recommend_practice_sentences():
             parsed = extract_json_from_ai(content)
             break
         except requests.exceptions.Timeout:
-            if attempt < max_retries:
+            if attempt < max_retries and (time.time() - start_llm) < total_timeout_budget - 2.0:
                 delay = (base_delay * (2 ** attempt)) + random.uniform(0.1, 0.3)
                 time.sleep(delay)
                 continue
             fallback_reason = "provider_timeout"
+            break
         except requests.exceptions.HTTPError as he:
             fallback_reason = f"http_{response.status_code}" if response is not None else "http_error"
+            break
         except Exception as e:
             fallback_reason = str(e)
             break

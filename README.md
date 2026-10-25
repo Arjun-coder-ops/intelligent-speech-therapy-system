@@ -71,6 +71,7 @@ graph TD
 - **Non-blocking Enqueue:** `POST /assessment/upload-async` immediately persists an `AssessmentJob` in the database and returns HTTP 202 Accepted with job ID and status URL.
 - **Background Execution:** Decoupled execution via `ThreadPoolExecutor(max_workers=2)` tracking explicit job states (`queued` -> `processing` -> `completed` / `failed`) and percentage progress.
 - **Persistent State & User Isolation:** Complete job results stored in SQL database with JWT-based user authorization preventing cross-user data leakage.
+- **Orphan Job Startup Recovery:** Automatically transitions any orphaned in-flight jobs left over from process crashes or server restarts into a terminal `failed` state.
 
 ---
 
@@ -78,16 +79,20 @@ graph TD
 
 Measured on local test environment (Windows 10, Python 3.10.8):
 
+> [!NOTE]
+> **Benchmark Scope:** ML tensor operations were evaluated in lightweight fallback mode. Measurements characterize API routing, ORM database transactions, LRU cache data structures, and async thread pool dispatch latency.
+
 | Endpoint / Operation | Sample Count | p50 Latency | p95 Latency | Throughput | Error Rate |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `GET /` | 100 reqs | **0.24 ms** | 0.55 ms | 3,431 req/s | 0.0% |
-| `GET /health/detailed` | 50 reqs | **0.49 ms** | 0.97 ms | 1,679 req/s | 0.0% |
-| `GET /metrics` | 50 reqs | **0.24 ms** | 0.50 ms | 3,816 req/s | 0.0% |
-| `GET /sentences` | 100 reqs | **0.77 ms** | 1.61 ms | 1,083 req/s | 0.0% |
-| `POST /practice/recommendation` (Fallback) | 50 reqs | **1.27 ms** | 2.24 ms | 621 req/s | 0.0% |
-| `ThreadSafeAudioLRUCache` Lookup | 1,000 lookups | **0.50 µs** | 0.70 µs | >1,000,000 ops/s | 0.0% |
-| `POST /assessment/upload-async` (Enqueue) | 5 jobs | **16.69 ms** | 21.40 ms | Client non-blocking | 0.0% |
-| Background Job Completion | 5 jobs | **126.10 ms** | 158.30 ms | Background worker | 0.0% |
+| `GET /` | 100 reqs | **0.48 ms** | 0.96 ms | 1,814 req/s | 0.0% |
+| `GET /health/detailed` | 50 reqs | **0.87 ms** | 1.87 ms | 962 req/s | 0.0% |
+| `GET /metrics` | 50 reqs | **0.46 ms** | 1.52 ms | 1,800 req/s | 0.0% |
+| `GET /sentences` | 100 reqs | **1.52 ms** | 2.73 ms | 572 req/s | 0.0% |
+| `POST /practice/recommendation` (Fallback) | 50 reqs | **3.17 ms** | 6.69 ms | 271 req/s | 0.0% |
+| `ThreadSafeAudioLRUCache` Lookup | 1,000 lookups | **0.80 µs** | 0.90 µs | >1,000,000 ops/s | 0.0% |
+| Synchronous Assessment (Client Blocking) | 5 jobs | **38.67 ms** | 42.10 ms | Synchronous blocking | 0.0% |
+| `POST /assessment/upload-async` (Enqueue) | 5 jobs | **21.95 ms** | 26.40 ms | Client unblocked (HTTP 202) | 0.0% |
+| Background Job Worker Completion | 5 jobs | **140.54 ms** | 165.20 ms | Background worker pool | 0.0% |
 
 ---
 
@@ -136,7 +141,7 @@ FLASK_ENV=development
 
 ## 🧪 Running Tests & Quality Gates
 
-### Run Complete Automated Test Suite (29 tests)
+### Run Complete Automated Test Suite (35 tests)
 ```bash
 python -m pytest tests/ -v
 ```
@@ -145,6 +150,7 @@ Covers:
 - `tests/test_ai_evaluation.py`: WER/CER edit-distance metrics, schema validation, dataset loader.
 - `tests/test_inference_reliability.py`: ThreadSafe LRU cache, singleton locks, Prometheus metrics, `/health/detailed`, resilient LLM fallback.
 - `tests/test_async_jobs.py`: Async job submission, HTTP 202 response, worker completion, user isolation.
+- `tests/test_reliability_deep_audit.py`: Multi-threaded cache isolation, worker exception terminal states, orphan job startup recovery, LLM retry exhaustion.
 
 ### Run AI Evaluation & Regression Pipeline
 ```bash

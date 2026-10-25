@@ -157,6 +157,10 @@ def run_evaluation(
 **Dataset Version:** `{dataset.version}`  
 **Duration:** `{elapsed_duration}s`  
 **Quality Gate Status:** **{report['quality_gate_status']}**  
+**Evaluation Mode:** `{speech_results.get('evaluation_mode', 'standard')}`  
+
+> [!NOTE]
+> {speech_results.get('evaluation_notice', 'Active.')}
 
 ---
 

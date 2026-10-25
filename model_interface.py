@@ -199,14 +199,14 @@ class SpeechTherapyModel:
         cached = self.lru_cache.get(audio_path)
         if cached is not None:
             self.cache = cached
-            return
+            return cached
 
         with _inference_semaphore:
             # Double check cache inside semaphore to avoid redundant inference under concurrency
             cached = self.lru_cache.get(audio_path)
             if cached is not None:
                 self.cache = cached
-                return
+                return cached
 
             print(f"[Model] Processing: {audio_path}")
             
@@ -411,6 +411,7 @@ class SpeechTherapyModel:
         }
         self.lru_cache.set(audio_path, cache_entry)
         self.cache = cache_entry
+        return cache_entry
 
 
 # --- THE API FUNCTIONS (Thread-Safe Lazy Initialization) ---
@@ -469,8 +470,8 @@ def calculate_phoneme_accuracy(audio_path):
         backend = get_backend()
         if backend is None:
             return []
-        backend._process_audio(audio_path)
-        return backend.cache.get("phoneme_data", [])
+        entry = backend._process_audio(audio_path)
+        return entry.get("phoneme_data", []) if entry else []
     except Exception:
         import traceback
         print(f"[Model] Error in calculate_phoneme_accuracy for {audio_path}:\n{traceback.format_exc()}")
@@ -481,8 +482,8 @@ def calculate_word_level_accuracy(audio_path):
         backend = get_backend()
         if backend is None:
             return []
-        backend._process_audio(audio_path)
-        return backend.cache.get("word_data", [])
+        entry = backend._process_audio(audio_path)
+        return entry.get("word_data", []) if entry else []
     except Exception:
         import traceback
         print(f"[Model] Error in calculate_word_level_accuracy for {audio_path}:\n{traceback.format_exc()}")
@@ -493,8 +494,8 @@ def calculate_fluency(audio_path):
         backend = get_backend()
         if backend is None:
             return 0
-        backend._process_audio(audio_path)
-        return backend.cache.get("fluency", 0)
+        entry = backend._process_audio(audio_path)
+        return entry.get("fluency", 0) if entry else 0
     except Exception:
         import traceback
         print(f"[Model] Error in calculate_fluency for {audio_path}:\n{traceback.format_exc()}")
@@ -505,8 +506,8 @@ def weak_phonemes(audio_path):
         backend = get_backend()
         if backend is None:
             return []
-        backend._process_audio(audio_path)
-        return backend.cache.get("weak_list", [])
+        entry = backend._process_audio(audio_path)
+        return entry.get("weak_list", []) if entry else []
     except Exception:
         import traceback
         print(f"[Model] Error in weak_phonemes for {audio_path}:\n{traceback.format_exc()}")
