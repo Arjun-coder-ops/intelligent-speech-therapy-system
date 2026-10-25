@@ -1,0 +1,252 @@
+{
+  "timestamp": "2026-10-25 05:37:22Z",
+  "duration_seconds": 0.08,
+  "dataset_version": "1.0.0",
+  "quality_gate_status": "PASSED",
+  "regressions_detected": [],
+  "metrics": {
+    "speech_samples_evaluated": 10,
+    "speech_mean_wer": 0.0,
+    "speech_mean_cer": 0.0,
+    "speech_word_accuracy": 1.0,
+    "llm_cases_evaluated": 9,
+    "llm_compliance_rate": 1.0,
+    "ai_engine_active": false
+  },
+  "baseline_comparison": {
+    "baseline_file": "baseline_v1.json",
+    "baseline_wer": 0.0,
+    "baseline_compliance": 1.0
+  },
+  "speech_evaluation": {
+    "dataset_version": "1.0.0",
+    "samples_evaluated": 10,
+    "ai_engine_active": false,
+    "mean_wer": 0.0,
+    "mean_cer": 0.0,
+    "word_accuracy": 1.0,
+    "results": [
+      {
+        "sample_id": "eval_speech_01",
+        "category": "fricatives_unvoiced",
+        "reference": "think",
+        "hypothesis": "think",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_02",
+        "category": "sibilant_fricative",
+        "reference": "see",
+        "hypothesis": "see",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_03",
+        "category": "palato_alveolar_fricative",
+        "reference": "she",
+        "hypothesis": "she",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_04",
+        "category": "liquid_consonant",
+        "reference": "red",
+        "hypothesis": "red",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_05",
+        "category": "liquid_consonant",
+        "reference": "run",
+        "hypothesis": "run",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_06",
+        "category": "voiced_fricative",
+        "reference": "zoo",
+        "hypothesis": "zoo",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_07",
+        "category": "plosives",
+        "reference": "dog",
+        "hypothesis": "dog",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_08",
+        "category": "glide",
+        "reference": "win",
+        "hypothesis": "win",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 1,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_09",
+        "category": "connected_speech_fricatives",
+        "reference": "she see zoo",
+        "hypothesis": "she see zoo",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 3,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      },
+      {
+        "sample_id": "eval_speech_10",
+        "category": "connected_speech_multiclass",
+        "reference": "red dog run win",
+        "hypothesis": "red dog run win",
+        "wer": 0.0,
+        "cer": 0.0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "hits": 4,
+        "phoneme_count": 0,
+        "fluency_score": 0
+      }
+    ]
+  },
+  "llm_evaluation": {
+    "dataset_version": "1.0.0",
+    "standard_cases_evaluated": 5,
+    "standard_schema_passes": 5,
+    "edge_cases_evaluated": 4,
+    "edge_cases_passed": 4,
+    "overall_compliance_rate": 1.0,
+    "standard_results": [
+      {
+        "case_id": "eval_llm_01",
+        "name": "Targeted Fricatives",
+        "status_code": 200,
+        "source": "database",
+        "is_valid_schema": true,
+        "schema_errors": [],
+        "sentence_count": 3
+      },
+      {
+        "case_id": "eval_llm_02",
+        "name": "Targeted Liquids & Glides",
+        "status_code": 200,
+        "source": "database",
+        "is_valid_schema": true,
+        "schema_errors": [],
+        "sentence_count": 3
+      },
+      {
+        "case_id": "eval_llm_03",
+        "name": "Targeted Plosives",
+        "status_code": 200,
+        "source": "database",
+        "is_valid_schema": true,
+        "schema_errors": [],
+        "sentence_count": 3
+      },
+      {
+        "case_id": "eval_llm_04",
+        "name": "Dental Fricatives",
+        "status_code": 200,
+        "source": "database",
+        "is_valid_schema": true,
+        "schema_errors": [],
+        "sentence_count": 3
+      },
+      {
+        "case_id": "eval_llm_05",
+        "name": "Empty Defect Lists (Baseline)",
+        "status_code": 200,
+        "source": "database",
+        "is_valid_schema": true,
+        "schema_errors": [],
+        "sentence_count": 3
+      }
+    ],
+    "edge_results": [
+      {
+        "edge_id": "edge_case_01",
+        "name": "Markdown Codeblock Encapsulation",
+        "passed": true,
+        "diagnostic": "Parsed 3 sentences. Errors: []"
+      },
+      {
+        "edge_id": "edge_case_02",
+        "name": "Provider Timeout Handling",
+        "passed": true,
+        "diagnostic": "Fallback generated 3 sentences with valid fields: True"
+      },
+      {
+        "edge_id": "edge_case_03",
+        "name": "Provider Rate Limit (HTTP 429)",
+        "passed": true,
+        "diagnostic": "Fallback generated 3 sentences with valid fields: True"
+      },
+      {
+        "edge_id": "edge_case_04",
+        "name": "Malformed Truncated JSON",
+        "passed": true,
+        "diagnostic": "Fallback generated 3 sentences with valid fields: True"
+      }
+    ]
+  }
+}

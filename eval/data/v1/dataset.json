@@ -1,0 +1,146 @@
+{
+  "version": "1.0.0",
+  "description": "Standardized evaluation dataset for Speech Therapy Assessment and Practice Recommendation pipelines.",
+  "metadata": {
+    "sampling_rate": 16000,
+    "channels": 1,
+    "format": "PCM_16"
+  },
+  "speech_evaluation_samples": [
+    {
+      "id": "eval_speech_01",
+      "reference_text": "think",
+      "audio_path": "eval/data/v1/audio/word_think.wav",
+      "target_phonemes": ["TH", "IH", "NG", "K"],
+      "category": "fricatives_unvoiced"
+    },
+    {
+      "id": "eval_speech_02",
+      "reference_text": "see",
+      "audio_path": "eval/data/v1/audio/word_see.wav",
+      "target_phonemes": ["S", "IY"],
+      "category": "sibilant_fricative"
+    },
+    {
+      "id": "eval_speech_03",
+      "reference_text": "she",
+      "audio_path": "eval/data/v1/audio/word_she.wav",
+      "target_phonemes": ["SH", "IY"],
+      "category": "palato_alveolar_fricative"
+    },
+    {
+      "id": "eval_speech_04",
+      "reference_text": "red",
+      "audio_path": "eval/data/v1/audio/word_red.wav",
+      "target_phonemes": ["R", "EH", "D"],
+      "category": "liquid_consonant"
+    },
+    {
+      "id": "eval_speech_05",
+      "reference_text": "run",
+      "audio_path": "eval/data/v1/audio/word_run.wav",
+      "target_phonemes": ["R", "AH", "N"],
+      "category": "liquid_consonant"
+    },
+    {
+      "id": "eval_speech_06",
+      "reference_text": "zoo",
+      "audio_path": "eval/data/v1/audio/word_zoo.wav",
+      "target_phonemes": ["Z", "UW"],
+      "category": "voiced_fricative"
+    },
+    {
+      "id": "eval_speech_07",
+      "reference_text": "dog",
+      "audio_path": "eval/data/v1/audio/word_dog.wav",
+      "target_phonemes": ["D", "AO", "G"],
+      "category": "plosives"
+    },
+    {
+      "id": "eval_speech_08",
+      "reference_text": "win",
+      "audio_path": "eval/data/v1/audio/word_win.wav",
+      "target_phonemes": ["W", "IH", "N"],
+      "category": "glide"
+    },
+    {
+      "id": "eval_speech_09",
+      "reference_text": "she see zoo",
+      "audio_path": "eval/data/v1/audio/sentence_she_see_zoo.wav",
+      "target_phonemes": ["SH", "IY", "S", "IY", "Z", "UW"],
+      "category": "connected_speech_fricatives"
+    },
+    {
+      "id": "eval_speech_10",
+      "reference_text": "red dog run win",
+      "audio_path": "eval/data/v1/audio/sentence_red_dog_run_win.wav",
+      "target_phonemes": ["R", "EH", "D", "D", "AO", "G", "R", "AH", "N", "W", "IH", "N"],
+      "category": "connected_speech_multiclass"
+    }
+  ],
+  "llm_evaluation_test_cases": [
+    {
+      "id": "eval_llm_01",
+      "name": "Targeted Fricatives",
+      "weak_phonemes": ["S", "SH"],
+      "weak_words": ["seashells", "shine"],
+      "expected_count": 3
+    },
+    {
+      "id": "eval_llm_02",
+      "name": "Targeted Liquids & Glides",
+      "weak_phonemes": ["R", "L"],
+      "weak_words": ["river", "rabbit", "little"],
+      "expected_count": 3
+    },
+    {
+      "id": "eval_llm_03",
+      "name": "Targeted Plosives",
+      "weak_phonemes": ["P", "B", "T", "D"],
+      "weak_words": ["peppers", "table", "bottle"],
+      "expected_count": 3
+    },
+    {
+      "id": "eval_llm_04",
+      "name": "Dental Fricatives",
+      "weak_phonemes": ["TH", "DH"],
+      "weak_words": ["think", "thick", "these"],
+      "expected_count": 3
+    },
+    {
+      "id": "eval_llm_05",
+      "name": "Empty Defect Lists (Baseline)",
+      "weak_phonemes": [],
+      "weak_words": [],
+      "expected_count": 3
+    }
+  ],
+  "llm_edge_cases": [
+    {
+      "id": "edge_case_01",
+      "name": "Markdown Codeblock Encapsulation",
+      "type": "format_recovery",
+      "simulated_raw": "```json\n{\n  \"sentences\": [\n    {\"text\": \"She sells shells.\", \"difficulty\": \"easy\"},\n    {\"text\": \"Think things through carefully.\", \"difficulty\": \"medium\"},\n    {\"text\": \"Peter Piper picked pickled peppers.\", \"difficulty\": \"hard\"}\n  ]\n}\n```",
+      "expected_recovery": true
+    },
+    {
+      "id": "edge_case_02",
+      "name": "Provider Timeout Handling",
+      "type": "timeout",
+      "expected_fallback": true
+    },
+    {
+      "id": "edge_case_03",
+      "name": "Provider Rate Limit (HTTP 429)",
+      "type": "rate_limit",
+      "expected_fallback": true
+    },
+    {
+      "id": "edge_case_04",
+      "name": "Malformed Truncated JSON",
+      "type": "json_parse_error",
+      "simulated_raw": "{\"sentences\": [{\"text\": \"Incomplete sentence...",
+      "expected_fallback": true
+    }
+  ]
+}

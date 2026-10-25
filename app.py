@@ -10,6 +10,7 @@ from modules.assessments.routes import assess_bp
 from modules.sentences.routes import sentences_bp
 from modules.practice.routes import routes_bp
 from modules.history.routes import history_bp
+from modules.observability import setup_observability, observability_bp
 
 
 def create_app(config_class=Config):
@@ -26,6 +27,9 @@ def create_app(config_class=Config):
     bcrypt.init_app(app)
     migrate.init_app(app, db)
 
+    # Observability (Correlation IDs, timing, and structured logging)
+    setup_observability(app)
+
     # CORS configuration - support configured origins and common dev ports
     raw_origins = os.getenv("FRONTEND_ORIGINS") or os.getenv("FRONTEND_ORIGIN") or "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
     frontend_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
@@ -39,10 +43,12 @@ def create_app(config_class=Config):
             r"/sentences/*": {"origins": frontend_origins},
             r"/practice/*": {"origins": frontend_origins},
             r"/history/*": {"origins": frontend_origins},
+            r"/metrics": {"origins": frontend_origins},
+            r"/health/*": {"origins": frontend_origins},
         },
         supports_credentials=True,
-        expose_headers=["Content-Type", "Authorization"],
-        allow_headers=["Content-Type", "Authorization"],
+        expose_headers=["Content-Type", "Authorization", "X-Correlation-ID"],
+        allow_headers=["Content-Type", "Authorization", "X-Correlation-ID", "X-Request-ID"],
         methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
     )
 
@@ -52,6 +58,7 @@ def create_app(config_class=Config):
     app.register_blueprint(sentences_bp, url_prefix="/sentences")
     app.register_blueprint(routes_bp, url_prefix="/practice")
     app.register_blueprint(history_bp, url_prefix="/history")
+    app.register_blueprint(observability_bp, url_prefix="")
 
     @app.route("/")
     def home():
@@ -63,9 +70,17 @@ def create_app(config_class=Config):
                 "assessment": "/assessment",
                 "practice": "/practice",
                 "sentences": "/sentences",
-                "history": "/history"
+                "history": "/history",
+                "metrics": "/metrics",
+                "detailed_health": "/health/detailed"
             }
         }), 200
+
+    with app.app_context():
+        try:
+            db.create_all()
+        except Exception as e:
+            app.logger.warning("db.create_all() encountered exception: %s", e)
 
     return app
 

@@ -2,15 +2,19 @@ from .services import (
     calculate_phoneme_accuracy,
     calculate_word_level_accuracy,
     calculate_fluency,
-    weak_phonemes
+    weak_phonemes,
+    queue_async_assessment
 )
 from extensions import db
 from modules.sentences.models import Sentence
-from .models import AudioRecord
+from .models import AudioRecord, AssessmentJob
+from modules.observability.metrics import metrics_collector
 from flask import Blueprint, request, jsonify, current_app
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from werkzeug.utils import secure_filename
 import os
 import time
+import uuid
 from sqlalchemy import text
 import numpy as np
 from dotenv import load_dotenv
@@ -308,4 +312,123 @@ def recommend_sentence():
         "text": sentence.text,
         "difficulty": sentence.difficulty
     }), 200
+
+
+@assess_bp.route("/upload-async", methods=["POST"])
+@jwt_required(optional=True)
+def upload_audio_async():
+    """
+    Asynchronous audio assessment endpoint.
+    Saves file, creates an AssessmentJob record in database, and dispatches processing
+    to the background worker pool without blocking the HTTP request thread.
+    Returns HTTP 202 Accepted with job_id and status URL.
+    """
+    jwt_user_id = get_jwt_identity()
+    user_id = jwt_user_id or request.form.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Unauthorized: Authentication required", "message": "unauthorized"}), 401
+
+    if "audio" not in request.files:
+        return jsonify({"error": "No audio file part in the request"}), 400
+
+    file = request.files["audio"]
+    sentence_id = request.form.get("sentence_id") or request.form.get("sentenceId")
+
+    if not file or file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
+
+    if not sentence_id:
+        return jsonify({"error": "Sentence ID missing"}), 400
+
+    try:
+        sentence_id_val = int(sentence_id)
+    except (ValueError, TypeError):
+        return jsonify({"error": "sentence_id must be an integer"}), 400
+
+    sentence = db.session.get(Sentence, sentence_id_val)
+    if not sentence:
+        return jsonify({"error": "Invalid sentence_id"}), 404
+
+    try:
+        user_id_val = int(user_id)
+    except (ValueError, TypeError):
+        user_id_val = user_id
+
+    if not allowed_file(file.filename):
+        return jsonify({"error": f"Invalid file type. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"}), 400
+
+    _, ext = os.path.splitext(file.filename)
+    ext = ext.lower()
+    timestamp = int(time.time())
+    filename = f"async_assessment_{timestamp}_{uuid.uuid4().hex[:8]}{ext}"
+    upload_folder = current_app.config.get("UPLOAD_FOLDER", "uploads")
+    os.makedirs(upload_folder, exist_ok=True)
+    file_path = os.path.join(upload_folder, filename)
+    file.save(file_path)
+
+    # Create persistent job in database
+    job_id = str(uuid.uuid4())
+    job = AssessmentJob(
+        id=job_id,
+        user_id=user_id_val,
+        sentence_id=sentence_id_val,
+        file_path=file_path,
+        status="queued",
+        progress=0
+    )
+
+    try:
+        db.session.add(job)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Failed to create assessment job", "details": str(e)}), 500
+
+    # Dispatch to background thread pool
+    queue_async_assessment(current_app._get_current_object(), job_id)
+
+    return jsonify({
+        "success": True,
+        "message": "Speech assessment job queued successfully",
+        "job_id": job.id,
+        "status": "queued",
+        "progress": 0,
+        "status_url": f"/assessment/jobs/{job.id}"
+    }), 202
+
+
+@assess_bp.route("/jobs/<string:job_id>", methods=["GET"])
+@jwt_required(optional=True)
+def get_job_status(job_id):
+    """
+    Poll status and retrieve results of an asynchronous assessment job.
+    Returns current state: queued, processing, completed, or failed.
+    """
+    job = db.session.get(AssessmentJob, job_id)
+    if not job:
+        return jsonify({"error": f"Assessment job '{job_id}' not found", "message": "not found"}), 404
+
+    # Enforce user authorization if JWT is provided
+    current_identity = get_jwt_identity()
+    if current_identity is not None:
+        if str(current_identity) != str(job.user_id):
+            return jsonify({"error": "Unauthorized access to job resource", "message": "unauthorized"}), 403
+
+    response_data = {
+        "job_id": job.id,
+        "user_id": job.user_id,
+        "sentence_id": job.sentence_id,
+        "status": job.status,
+        "progress": job.progress,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
+
+    if job.status == "completed":
+        response_data["result"] = job.result_json
+    elif job.status == "failed":
+        response_data["error"] = job.error_message
+
+    return jsonify(response_data), 200
+
 

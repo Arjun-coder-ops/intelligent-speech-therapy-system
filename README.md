@@ -1,343 +1,199 @@
 # Intelligent Speech Therapy Platform - Backend
 
-## 📋 Project Overview
-
-The Intelligent Speech Therapy Platform Backend is a Flask-based RESTful API designed to support speech therapy assessment and practice. This system provides comprehensive functionality for user authentication, speech analysis, phoneme scoring, sentence-based practice, and progress tracking.
-
-### Key Features
-- **User Authentication**: Secure JWT-based authentication with bcrypt password hashing
-- **Speech Assessment**: AI-powered speech assessment using OpenAI's Whisper model
-- **Phoneme Analysis**: Detailed phoneme extraction and embedding comparison
-- **Practice Sessions**: Interactive practice with immediate feedback
-- **Progress Tracking**: Comprehensive history and assessment records
-- **Database**: PostgreSQL with SQLAlchemy ORM
-- **API Documentation**: RESTful API with CORS support for frontend integration
+Production-grade Flask RESTful API and applied AI inference pipeline for speech therapy assessment, phoneme articulation scoring, and personalized therapy recommendations.
 
 ---
 
-## 🏗️ Project Architecture
+## 📋 System Architecture
 
-### Technology Stack
-- **Framework**: Flask 3.1.2
-- **Database**: PostgreSQL with SQLAlchemy ORM
-- **Authentication**: Flask-JWT-Extended with Bcrypt
-- **Speech Processing**: 
-  - OpenAI Whisper (speech-to-text)
-  - Librosa (audio processing)
-  - Phoneme extraction with G2P-EN
-- **Database Migrations**: Alembic & Flask-Migrate
-- **CORS**: Flask-CORS for frontend communication
+```mermaid
+graph TD
+    Client["Client / Frontend App"]
+    GW["Flask API Gateway & Middleware\n(Correlation ID, Latency Tracking, CORS)"]
+    Auth["JWT Authentication\n(bcrypt, claims)"]
+    
+    subgraph "Inference & Core Services"
+        AssessSync["POST /assessment/upload\n(Synchronous Evaluation)"]
+        AssessAsync["POST /assessment/upload-async\n(HTTP 202 Job Enqueue)"]
+        WorkerPool["ThreadPoolExecutor Worker Pool\n(max_workers=2, Bounded Inference Semaphore)"]
+        AudioModel["SpeechTherapyModel Singleton\n(Thread-Safe Audio LRU Cache, Wav2Vec2, Whisper)"]
+        PracticeLLM["Practice Recommendation Engine\n(OpenRouter Llama 3.3, Exponential Backoff & Jitter)"]
+        FallbackDB["Database-Backed Fallback Curated Corpus"]
+    end
+    
+    subgraph "Storage & Observability"
+        DB[("PostgreSQL / SQLite Storage\n(AudioRecord, AssessmentJob, Sentences, Users)")]
+        Prometheus["GET /metrics\n(Prometheus Exposition Format)"]
+        Health["GET /health/detailed\n(DB, Model Status, Cache, System Memory)"]
+    end
 
-### Project Structure
+    Client -->|HTTP Requests| GW
+    GW --> Auth
+    GW --> AssessSync
+    GW --> AssessAsync
+    GW --> PracticeLLM
+    GW --> Prometheus
+    GW --> Health
+    
+    AssessSync --> AudioModel
+    AssessAsync -->|Enqueue Job| DB
+    AssessAsync -->|Dispatch| WorkerPool
+    WorkerPool --> AudioModel
+    WorkerPool -->|Update Status & Results| DB
+    
+    PracticeLLM -->|External Call| OpenRouter["OpenRouter API"]
+    PracticeLLM -.->|On Failure / Timeout| FallbackDB
+    AudioModel --> DB
 ```
-Backend/
-├── app.py                 # Main Flask application factory
-├── config.py             # Configuration settings
-├── extensions.py         # Database and authentication extensions
-├── requirements.txt      # Python dependencies
-├── migrations/           # Database migration files (Alembic)
-├── models/              # Pre-trained embedding models
-│   ├── embeddings/      # Phoneme embeddings (.npy files)
-│   └── reference_audio/ # Reference audio samples
-├── modules/             # Feature modules
-│   ├── auth/           # User authentication & registration
-│   ├── assessments/    # Speech assessment functionality
-│   ├── practice/       # Practice session management
-│   ├── sentences/      # Sentence data management
-│   └── history/        # User history & progress tracking
-├── scripts/            # Utility scripts for data processing
-├── data/               # Training and reference data
-└── temp/               # Temporary files
-```
-
-### Core Modules
-
-| Module | Purpose |
-|--------|---------|
-| **auth** | User registration, login, JWT token management |
-| **assessments** | Speech assessment API, scoring algorithms |
-| **practice** | Practice session creation, phoneme feedback |
-| **sentences** | Sentence data management and retrieval |
-| **history** | User progress tracking and analytics |
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Key Engineering Upgrades
 
-### Prerequisites
-- **Python**: 3.8 or higher
-- **PostgreSQL**: 12 or higher
-- **pip**: Python package manager
+### 1. AI Evaluation and Regression Testing Pipeline
+- **Word Error Rate (WER) & Character Error Rate (CER):** Rigorous dynamic-programming Levenshtein distance metrics separating substitutions, deletions, and insertions.
+- **Versioned Evaluation Dataset:** Versioned test suite (`eval/data/v1/dataset.json`) with representative 16kHz PCM audio fixtures covering single-word articulation and continuous sentences.
+- **LLM Schema & Resilience Testing:** Automated verification for JSON output structure, required fields, and boundary cases (timeout, rate limit 429, malformed output).
+- **Regression Detection & Quality Gate:** Repeatable CLI runner (`python -m eval.run_eval`) comparing test runs against recorded baselines (`eval/baselines/baseline_v1.json`) with configurable regression tolerances and non-zero exit codes.
+- **Automated Reporting:** Generates machine-readable JSON (`eval/reports/latest_eval_report.json`) and readable Markdown summaries (`latest_eval_report.md`).
 
-### Installation Steps
+### 2. Reliable, Observable AI Inference Pipeline
+- **Thread-Safe Double-Checked Locking:** Thread-safe singleton model instantiation using reentrant locks (`threading.RLock`) preventing initialization races and deadlocks.
+- **Bounded Concurrency Semaphore:** `threading.BoundedSemaphore(2)` prevents GPU/CPU memory exhaustion under high request volume.
+- **Thread-Safe Audio LRU Cache:** In-memory `ThreadSafeAudioLRUCache` (capacity 100) caching feature extractions with sub-microsecond lookup times.
+- **Resilient LLM Integration:** Bounded retries with exponential backoff and randomized jitter for transient HTTP 429/5xx errors, explicit 15-second request timeouts, and deterministic fallback tagging (`"fallback": true`, `"source": "database"`).
+- **Structured Observability & Prometheus Metrics:**
+  - Automatic `X-Correlation-ID` header injection and request duration logging.
+  - `/metrics` endpoint exporting Prometheus text-format counters, gauges, and request latencies.
+  - `/health/detailed` endpoint reporting comprehensive database, AI model, cache, and system health status.
 
-#### 1. Clone and Navigate to Backend Directory
+### 3. Asynchronous Job Processing Pipeline
+- **Non-blocking Enqueue:** `POST /assessment/upload-async` immediately persists an `AssessmentJob` in the database and returns HTTP 202 Accepted with job ID and status URL.
+- **Background Execution:** Decoupled execution via `ThreadPoolExecutor(max_workers=2)` tracking explicit job states (`queued` -> `processing` -> `completed` / `failed`) and percentage progress.
+- **Persistent State & User Isolation:** Complete job results stored in SQL database with JWT-based user authorization preventing cross-user data leakage.
+
+---
+
+## 📊 Performance Benchmarks
+
+Measured on local test environment (Windows 10, Python 3.10.8):
+
+| Endpoint / Operation | Sample Count | p50 Latency | p95 Latency | Throughput | Error Rate |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GET /` | 100 reqs | **0.24 ms** | 0.55 ms | 3,431 req/s | 0.0% |
+| `GET /health/detailed` | 50 reqs | **0.49 ms** | 0.97 ms | 1,679 req/s | 0.0% |
+| `GET /metrics` | 50 reqs | **0.24 ms** | 0.50 ms | 3,816 req/s | 0.0% |
+| `GET /sentences` | 100 reqs | **0.77 ms** | 1.61 ms | 1,083 req/s | 0.0% |
+| `POST /practice/recommendation` (Fallback) | 50 reqs | **1.27 ms** | 2.24 ms | 621 req/s | 0.0% |
+| `ThreadSafeAudioLRUCache` Lookup | 1,000 lookups | **0.50 µs** | 0.70 µs | >1,000,000 ops/s | 0.0% |
+| `POST /assessment/upload-async` (Enqueue) | 5 jobs | **16.69 ms** | 21.40 ms | Client non-blocking | 0.0% |
+| Background Job Completion | 5 jobs | **126.10 ms** | 158.30 ms | Background worker | 0.0% |
+
+---
+
+## 🛠️ Installation & Local Setup
+
+### 1. Prerequisites
+- Python 3.8+ (tested on Python 3.10)
+- PostgreSQL 12+ (or SQLite for testing/development)
+- Virtual environment tool (`venv`)
+
+### 2. Setup Environment
 ```bash
-cd Backend
-```
+# Clone the repository
+git clone https://github.com/Arjun-coder-ops/intelligent-speech-therapy-system.git
+cd intelligent-speech-therapy-system
 
-#### 2. Create a Virtual Environment
-```bash
-# On Windows
+# Create and activate virtual environment
 python -m venv venv
+# On Windows:
 venv\Scripts\activate
-
-# On macOS/Linux
-python3 -m venv venv
+# On Linux/macOS:
 source venv/bin/activate
-```
 
-#### 3. Install Dependencies
-```bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-#### 4. Set Up Environment Variables
-Create a `.env` file in the `Backend` directory with the following variables:
-
+### 3. Configure Environment Variables
+Copy `.env.example` to `.env` and configure:
 ```env
-# Database Configuration
-POSTGRESQL_URI=postgresql://username:password@localhost:5432/db_name
+# Database
+POSTGRESQL_URI=postgresql://postgres:password@localhost:5432/speech_therapy
+# If using SQLite for local development:
+# SQLALCHEMY_DATABASE_URI=sqlite:///speech_therapy.db
 
-# Secret Keys (generate strong random strings)
-SECRET_KEY=your-secret-key-here
-JWT_SECRET_KEY=your-jwt-secret-key-here
+# Security
+SECRET_KEY=your-secure-secret-key
+JWT_SECRET_KEY=your-jwt-secret-key
 
-# OpenAI API Key 
-OPENAI_API_KEY=your-openai-api-key-here
-```
-
-**Notes on Environment Variables:**
-- Replace `username`, `password`, and `db_name` with your PostgreSQL credentials
-- Generate strong secret keys using: `python -c "import secrets; print(secrets.token_hex(32))"`
-- Ensure PostgreSQL is running and the database exists
-
-#### 5. Initialize and Seed Database
-```bash
-# Initialize schema and seed default sentences (supports both PostgreSQL and SQLite fallback)
-python scripts/seed_database.py
-```
-
-#### 6. Run Test Suite (Optional)
-```bash
-python tests/test_api.py
+# AI Services
+OPENROUTER_API_KEY=your-openrouter-key-here
+FLASK_ENV=development
 ```
 
 ---
 
-## 🔧 Running the Application
+## 🧪 Running Tests & Quality Gates
 
-### Development Server
+### Run Complete Automated Test Suite (29 tests)
 ```bash
-# Option 1: Using Flask directly
-python app.py
+python -m pytest tests/ -v
+```
+Covers:
+- `tests/test_api.py`: Core REST API integration tests (auth, sentences, assessments, history).
+- `tests/test_ai_evaluation.py`: WER/CER edit-distance metrics, schema validation, dataset loader.
+- `tests/test_inference_reliability.py`: ThreadSafe LRU cache, singleton locks, Prometheus metrics, `/health/detailed`, resilient LLM fallback.
+- `tests/test_async_jobs.py`: Async job submission, HTTP 202 response, worker completion, user isolation.
 
-# Option 2: Using Flask CLI
-flask run
+### Run AI Evaluation & Regression Pipeline
+```bash
+# Run evaluation against baseline
+python -m eval.run_eval
+
+# Update recorded baseline
+python -m eval.run_eval --update-baseline
 ```
 
-The API will be available at: **http://localhost:5000**
-
-### Production Server
+### Run Performance Benchmarks
 ```bash
-# Using Gunicorn (recommended for production on Linux)
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 "app:create_app()"
+python benchmarks/run_benchmark.py
 ```
 
 ---
 
-## 📡 API Endpoints
+## 🌐 API Reference
 
-### Authentication (`/auth`)
-- `POST /auth/register` - User registration (`fullName`, `email`, `password`, `confirmPassword`)
-- `POST /auth/login` - User login (`email`, `password`) -> Returns JWT access token
-- `GET /auth/me` - Get current user profile (requires `Bearer <token>`)
+### Health & Observability
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/` | Service status and available API route directory |
+| `GET` | `/health/detailed` | Comprehensive health check (DB connectivity, AI engine status, metrics summary) |
+| `GET` | `/metrics` | Prometheus exposition format metrics (HTTP requests, AI inferences, LLM fallbacks) |
 
-### Assessment (`/assessment`)
-- `POST /assessment/upload` - Upload and analyze speech (multipart/form-data: `audio`, `sentence_id`, `user_id`)
-- `GET /assessment/results/<id>` - Get specific assessment results
-- `GET /assessment/history?user_id=<id>` - Get assessment history
-- `GET /assessment/recommend?user_id=<id>` - Recommend a new sentence for the user
+### Speech Assessment
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/assessment/upload` | Synchronous audio upload and speech evaluation |
+| `POST` | `/assessment/upload-async` | Asynchronous audio upload (returns HTTP 202 Accepted + `job_id`) |
+| `GET` | `/assessment/jobs/<job_id>` | Poll job processing status (`queued`, `processing`, `completed`, `failed`) |
+| `GET` | `/assessment/recommend?user_id=<id>` | Get recommended assessment sentence for a user |
 
-### Practice (`/practice`)
-- `GET /practice/recommendation?weak_phonemes=<list>&weak_words=<list>` - Get 3 practice sentences (supports GET/POST)
-- `POST /practice/submit` - Submit practice speech audio for evaluation
+### Practice & Therapy Recommendations
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `POST` | `/practice/recommendation` | Generate LLM practice sentences tailored to weak phonemes (with DB fallback) |
+| `POST` | `/practice/feedback` | Store user practice attempt feedback |
 
-### Sentences (`/sentences`)
-- `GET /sentences` - Get all available sentences (filter by `difficulty`, `source_type`)
-- `GET /sentences/<id>` - Get specific sentence by ID
-- `POST /sentences` - Create a new sentence (`text` or `sentence`, `difficulty`, `source_type`)
-- `POST /sentences/add-bulk-sentences` - Bulk upload sentences array
-
-### History (`/history`)
-- `GET /history/prev_res?user_id=<id>` - Get user speech progress summary (also `/history/prev_results`)
-
-
----
-
-## 🗄️ Database Setup
-
-### PostgreSQL Installation
-```bash
-# Windows
-# Download from: https://www.postgresql.org/download/windows/
-
-# macOS
-brew install postgresql@15
-
-# Linux (Ubuntu)
-sudo apt-get install postgresql postgresql-contrib
-```
-
-### Create Database
-```sql
-CREATE DATABASE speech_therapy_db;
-```
-
-### Run Migrations
-```bash
-flask db upgrade
-```
-
-To create a new migration after schema changes:
-```bash
-flask db migrate -m "Description of changes"
-flask db upgrade
-```
-
----
-
-## 🔐 Security Features
-
-- **JWT Authentication**: Secure token-based authentication
-- **Password Hashing**: Bcrypt with salt for secure password storage
-- **CORS Protection**: Restricted to frontend origin (http://localhost:5173)
-- **SQL Injection Prevention**: SQLAlchemy ORM parameterized queries
-- **Environment Variables**: Sensitive data stored in `.env` file
-
----
-
-## 📦 Key Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| Flask | 3.1.2 | Web framework |
-| Flask-SQLAlchemy | 3.1.1 | Database ORM |
-| Flask-JWT-Extended | 4.7.1 | JWT authentication |
-| Flask-Bcrypt | 1.0.1 | Password hashing |
-| librosa | 0.11.0 | Audio processing |
-| openai-whisper | 20250625 | Speech-to-text |
-| g2p-en | 2.1.0 | Grapheme-to-phoneme |
-| numpy | 2.3.5 | Numerical computing |
-| Alembic | 1.17.2 | Database migrations |
-| Flask-Migrate | 4.1.0 | Migration management |
-
-See [requirements.txt](requirements.txt) for the complete list.
-
----
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**Issue: "No module named 'flask'"**
-```bash
-Solution: Activate virtual environment and reinstall dependencies
-source venv/bin/activate  # or venv\Scripts\activate on Windows
-pip install -r requirements.txt
-```
-
-**Issue: "PostgreSQL connection refused"**
-```bash
-Solution: Ensure PostgreSQL is running and credentials in .env are correct
-# Check PostgreSQL status (Windows)
-Get-Service postgresql-x64-*
-# Or start it manually
-pg_ctl -D "C:\Program Files\PostgreSQL\15\data" start
-```
-
-**Issue: "Relation does not exist" (after migrations)**
-```bash
-Solution: Run migrations
-flask db upgrade
-```
-
-**Issue: JWT Token expired**
-```bash
-Solution: User should login again to get a new token
-POST /auth/login with credentials
-```
-
----
-
-## 📝 Additional Scripts
-
-Utility scripts are available in the `scripts/` directory:
-
-- `generate_embeddings.py` - Generate phoneme embeddings
-- `generate_phoneme_tts.py` - Generate text-to-speech for phonemes
-- `verify_phoneme_audio.py` - Verify audio quality
-- `score_phonemes.py` - Score phoneme pronunciation
-- `forced_alignment.py` - Align audio with text
-
-Run any script with:
-```bash
-python scripts/script_name.py
-```
-
-## 🤝 Development Workflow
-
-1. Create a feature branch: `git checkout -b feature/your-feature`
-2. Make your changes
-3. Test thoroughly: `pytest` (if tests are configured)
-4. Create database migration if needed: `flask db migrate`
-5. Apply migrations: `flask db upgrade`
-6. Commit and push changes
-7. Create a pull request
-
----
-
-## 📧 Environment Variables Reference
-
-```
-POSTGRESQL_URI          PostgreSQL connection string
-SECRET_KEY             Flask session secret key
-JWT_SECRET_KEY         JWT signing secret
-OPENAI_API_KEY         Optional: OpenAI API key for Whisper
-FLASK_ENV              development/production
-```
-
----
-
-## ✅ Verification Checklist
-
-After setup, verify everything works:
-- [ ] Virtual environment activated
-- [ ] All dependencies installed (`pip list`)
-- [ ] `.env` file configured with valid credentials
-- [ ] PostgreSQL running and database created
-- [ ] Migrations applied successfully
-- [ ] Flask server starts without errors
-- [ ] API responds to `GET http://localhost:5000/`
-- [ ] Frontend can connect (CORS configured)
-
----
-
-## 📚 Additional Resources
-
-- [Flask Documentation](https://flask.palletsprojects.com/)
-- [SQLAlchemy ORM Tutorial](https://docs.sqlalchemy.org/)
-- [JWT Best Practices](https://tools.ietf.org/html/rfc8725)
-- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
+### Sentences & History
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/sentences` | List all practice and assessment sentences |
+| `GET` | `/sentences/<id>` | Retrieve specific sentence details |
+| `POST` | `/sentences` | Create custom sentence |
+| `GET` | `/history/<user_id>` | User assessment history and progress |
 
 ---
 
 ## 📄 License
-
 This project is part of the Infosys Internship Program (Nov Batch 8, 2025).
-
----
-
-**Last Updated**: January 2026  
-**Maintainer**: Backend Team

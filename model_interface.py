@@ -1,6 +1,8 @@
 import os
 import sys
 import logging
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 # Safe imports for AI dependencies
@@ -68,13 +70,49 @@ if extract_embedding is None:
         logging.warning("extract_embedding is unavailable; called with %s", audio_path)
         return None
 
+class ThreadSafeAudioLRUCache:
+    """Thread-safe bounded LRU cache for audio processing results."""
+    def __init__(self, capacity: int = 100):
+        self.capacity = capacity
+        self.cache = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, key: str):
+        with self.lock:
+            if key not in self.cache:
+                return None
+            self.cache.move_to_end(key)
+            return self.cache[key]
+
+    def set(self, key: str, value: dict):
+        with self.lock:
+            self.cache[key] = value
+            self.cache.move_to_end(key)
+            if len(self.cache) > self.capacity:
+                self.cache.popitem(last=False)
+
+    def clear(self):
+        with self.lock:
+            self.cache.clear()
+
+    def size(self) -> int:
+        with self.lock:
+            return len(self.cache)
+
+
+_init_lock = threading.RLock()
+_inference_semaphore = threading.BoundedSemaphore(value=2)
+
+
 class SpeechTherapyModel:
     _instance = None
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(SpeechTherapyModel, cls).__new__(cls)
-            cls._instance._initialize_models()
+            with _init_lock:
+                if cls._instance is None:
+                    cls._instance = super(SpeechTherapyModel, cls).__new__(cls)
+                    cls._instance._initialize_models()
         return cls._instance
 
     def _initialize_models(self):
@@ -83,6 +121,7 @@ class SpeechTherapyModel:
         self.extractor = None
         self.references = {}
         self.device = "cpu"
+        self.lru_cache = ThreadSafeAudioLRUCache(capacity=100)
 
         if not AI_DEPS_AVAILABLE:
             print("[Model] Warning: AI libraries not available. Model features will be limited.")
@@ -93,6 +132,10 @@ class SpeechTherapyModel:
                 "fluency": 0,
                 "weak_list": []
             }
+            return
+
+        if os.environ.get("SKIP_HEAVY_MODELS") == "1" or os.environ.get("TESTING") == "1":
+            print("[Model] Testing/Lightweight mode: Skipping heavy model weights download.")
             return
 
         try:
@@ -124,13 +167,12 @@ class SpeechTherapyModel:
                     except Exception as e:
                         logging.warning("Failed to load reference %s: %s", f, e)
 
-        
         count = len(self.references)
         print(f"[Model] Loaded {count} reference phonemes from {EMB_DIR}")
         if count == 0:
             print("[WARNING] No references found! Did you run build_clean_references.py?")
 
-        # Cache for the last processed file
+        # Legacy single-entry cache for backwards compatibility
         self.cache = {
             "path": None,
             "phoneme_data": [],
@@ -153,75 +195,84 @@ class SpeechTherapyModel:
             return emb.squeeze().cpu().numpy()
 
     def _process_audio(self, audio_path):
-        # Cache Check
-        if self.cache["path"] == audio_path:
+        # 1. Thread-safe LRU Cache Check
+        cached = self.lru_cache.get(audio_path)
+        if cached is not None:
+            self.cache = cached
             return
 
-        print(f"[Model] Processing: {audio_path}")
-        
-        # 1. Load Audio with robust fallbacks
-        wav = None
-        sr = None
-        try:
-            wav, sr = sf.read(audio_path, dtype="float32")
-        except Exception as e:
-            logging.warning("soundfile failed to read %s: %s. Falling back to librosa.", audio_path, e)
-            try:
-                # librosa will load & resample if sr is set
-                wav, sr = librosa.load(audio_path, sr=16000, mono=False)
-            except Exception as e2:
-                logging.warning("librosa failed to read %s: %s. Trying pydub if available.", audio_path, e2)
-                try:
-                    from pydub import AudioSegment
-                    ad = AudioSegment.from_file(audio_path)
-                    samples = np.array(ad.get_array_of_samples()).astype('float32')
-                    if ad.channels > 1:
-                        samples = samples.reshape((-1, ad.channels)).mean(axis=1)
-                    # Normalize pydub integer samples to -1..1 depending on sample width
-                    max_val = float(1 << (8 * ad.sample_width - 1))
-                    wav = samples / max_val
-                    sr = ad.frame_rate
-                except Exception as e3:
-                    logging.exception("All audio loaders failed for %s: %s", audio_path, e3)
-                    # Provide a short silent buffer to avoid crashes downstream
-                    wav = np.zeros(1600, dtype="float32")
-                    sr = 16000
+        with _inference_semaphore:
+            # Double check cache inside semaphore to avoid redundant inference under concurrency
+            cached = self.lru_cache.get(audio_path)
+            if cached is not None:
+                self.cache = cached
+                return
 
-        # Ensure mono
-        if wav is None:
-            wav = np.zeros(1600, dtype="float32")
-            sr = 16000
-        if hasattr(wav, 'ndim') and wav.ndim > 1:
-            wav = wav.mean(axis=1)
-
-        # Ensure correct sample rate
-        if sr != 16000:
-            try:
-                wav = librosa.resample(wav, orig_sr=sr, target_sr=16000)
-                sr = 16000
-            except Exception as e:
-                logging.exception("Failed to resample %s from %s to 16000: %s", audio_path, sr, e)
-                # If resample fails, reassign sr to 16000 and proceed (buffer length-based durations still work approximately)
-                sr = 16000
+            print(f"[Model] Processing: {audio_path}")
             
-        # 2. Alignment
-        try:
-            transcript = self.align_model.transcribe(audio_path, word_timestamps=True)
-            if not transcript or not getattr(transcript, "segments", None):
-                print("[Model] No segments returned by Whisper")
+            # 1. Load Audio with robust fallbacks
+            wav = None
+            sr = None
+            try:
+                wav, sr = sf.read(audio_path, dtype="float32")
+            except Exception as e:
+                logging.warning("soundfile failed to read %s: %s. Falling back to librosa.", audio_path, e)
+                try:
+                    # librosa will load & resample if sr is set
+                    wav, sr = librosa.load(audio_path, sr=16000, mono=False)
+                except Exception as e2:
+                    logging.warning("librosa failed to read %s: %s. Trying pydub if available.", audio_path, e2)
+                    try:
+                        from pydub import AudioSegment
+                        ad = AudioSegment.from_file(audio_path)
+                        samples = np.array(ad.get_array_of_samples()).astype('float32')
+                        if ad.channels > 1:
+                            samples = samples.reshape((-1, ad.channels)).mean(axis=1)
+                        # Normalize pydub integer samples to -1..1 depending on sample width
+                        max_val = float(1 << (8 * ad.sample_width - 1))
+                        wav = samples / max_val
+                        sr = ad.frame_rate
+                    except Exception as e3:
+                        logging.exception("All audio loaders failed for %s: %s", audio_path, e3)
+                        # Provide a short silent buffer to avoid crashes downstream
+                        wav = np.zeros(1600, dtype="float32")
+                        sr = 16000
 
-        except FileNotFoundError as e:
-            import traceback
-            print("[Model] FFmpeg/ffprobe not found on PATH. Please install FFmpeg and ensure ffmpeg and ffprobe are accessible.\nSee https://ffmpeg.org/download.html")
-            print(traceback.format_exc())
-            # Create an empty transcript object with segments=[] so the processing continues safely
-            transcript = type("T", (), {})()
-            transcript.segments = []
-        except Exception:
-            import traceback
-            print(f"[Model] Error during alignment for {audio_path}:\n{traceback.format_exc()}")
-            transcript = type("T", (), {})()
-            transcript.segments = []
+            # Ensure mono
+            if wav is None:
+                wav = np.zeros(1600, dtype="float32")
+                sr = 16000
+            if hasattr(wav, 'ndim') and wav.ndim > 1:
+                wav = wav.mean(axis=1)
+
+            # Ensure correct sample rate
+            if sr != 16000:
+                try:
+                    wav = librosa.resample(wav, orig_sr=sr, target_sr=16000)
+                    sr = 16000
+                except Exception as e:
+                    logging.exception("Failed to resample %s from %s to 16000: %s", audio_path, sr, e)
+                    # If resample fails, reassign sr to 16000 and proceed (buffer length-based durations still work approximately)
+                    sr = 16000
+                
+            # 2. Alignment
+            transcript = type("T", (), {"segments": []})()
+            if self.align_model is not None:
+                try:
+                    transcript = self.align_model.transcribe(audio_path, word_timestamps=True)
+                    if not transcript or not getattr(transcript, "segments", None):
+                        print("[Model] No segments returned by Whisper")
+                except FileNotFoundError as e:
+                    import traceback
+                    print("[Model] FFmpeg/ffprobe not found on PATH. Please install FFmpeg and ensure ffmpeg and ffprobe are accessible.\nSee https://ffmpeg.org/download.html")
+                    print(traceback.format_exc())
+                    transcript = type("T", (), {"segments": []})()
+                except Exception:
+                    import traceback
+                    print(f"[Model] Error during alignment for {audio_path}:\n{traceback.format_exc()}")
+                    transcript = type("T", (), {"segments": []})()
+            else:
+                transcript = type("T", (), {"segments": []})()
         
         total_duration = len(wav) / 16000
         speech_duration = 0
@@ -305,19 +356,23 @@ class SpeechTherapyModel:
                     
                     score = 0
                     # Score Calculation
-                    if p_key in self.references:
-                        user_emb = self._extract_features(chunk)
-                        ref_emb = self.references[p_key]
-                        raw_sim = 1 - cosine(user_emb, ref_emb)
-                        
-                        # Normalize
-                        score = max(0, raw_sim)
-                        if score < 0.2:
-                            score = score * 250
-                        else:
-                            norm = (score - 0.2) / 0.8
-                            score = 50 + (norm * 50)
-                        score = min(100, round(score, 1))
+                    if p_key in self.references and self.extractor is not None:
+                        try:
+                            user_emb = self._extract_features(chunk)
+                            ref_emb = self.references[p_key]
+                            raw_sim = 1 - cosine(user_emb, ref_emb)
+                            
+                            # Normalize
+                            score = max(0, raw_sim)
+                            if score < 0.2:
+                                score = score * 250
+                            else:
+                                norm = (score - 0.2) / 0.8
+                                score = 50 + (norm * 50)
+                            score = min(100, round(score, 1))
+                        except Exception as e:
+                            logging.warning("Feature extraction failed for phoneme %s: %s", p_key, e)
+                            score = 0
                     
                     p_data = {
                         "phoneme": p_key,
@@ -347,25 +402,67 @@ class SpeechTherapyModel:
         weak_list = [p['phoneme'] for p in phoneme_scores if p['score'] < 60]
         weak_list = list(set(weak_list))
 
-        self.cache["path"] = audio_path
-        self.cache["phoneme_data"] = phoneme_scores
-        self.cache["word_data"] = word_scores
-        self.cache["fluency"] = round(fluency, 1)
-        self.cache["weak_list"] = weak_list
+        cache_entry = {
+            "path": audio_path,
+            "phoneme_data": phoneme_scores,
+            "word_data": word_scores,
+            "fluency": round(fluency, 1),
+            "weak_list": weak_list
+        }
+        self.lru_cache.set(audio_path, cache_entry)
+        self.cache = cache_entry
 
 
-# --- THE API FUNCTIONS (Lazy initialized) ---
+# --- THE API FUNCTIONS (Thread-Safe Lazy Initialization) ---
 _backend = None
 
 def get_backend():
     global _backend
     if _backend is None:
-        try:
-            _backend = SpeechTherapyModel()
-        except Exception as e:
-            logging.error(f"[Model] Could not initialize SpeechTherapyModel: {e}")
-            _backend = None
+        with _init_lock:
+            if _backend is None:
+                try:
+                    _backend = SpeechTherapyModel()
+                except Exception as e:
+                    logging.error(f"[Model] Could not initialize SpeechTherapyModel: {e}")
+                    _backend = None
     return _backend
+
+def get_model_status():
+    backend = get_backend()
+    if backend is None:
+        return {
+            "status": "unavailable",
+            "ai_deps_available": False,
+            "device": "cpu",
+            "whisper_loaded": False,
+            "wav2vec2_loaded": False,
+            "reference_phonemes_count": 0,
+            "cache_size": 0
+        }
+    return {
+        "status": "online" if AI_DEPS_AVAILABLE else "fallback_mode",
+        "ai_deps_available": AI_DEPS_AVAILABLE,
+        "device": getattr(backend, "device", "cpu"),
+        "whisper_loaded": getattr(backend, "align_model", None) is not None,
+        "wav2vec2_loaded": getattr(backend, "extractor", None) is not None,
+        "reference_phonemes_count": len(getattr(backend, "references", {})),
+        "cache_size": backend.lru_cache.size() if hasattr(backend, "lru_cache") else 0,
+        "cache_capacity": getattr(backend.lru_cache, "capacity", 100) if hasattr(backend, "lru_cache") else 100,
+        "max_concurrent_inferences": 2
+    }
+
+def clear_model_cache():
+    backend = get_backend()
+    if backend and hasattr(backend, "lru_cache"):
+        backend.lru_cache.clear()
+        backend.cache = {
+            "path": None,
+            "phoneme_data": [],
+            "word_data": [],
+            "fluency": 0,
+            "weak_list": []
+        }
 
 def calculate_phoneme_accuracy(audio_path):
     try:

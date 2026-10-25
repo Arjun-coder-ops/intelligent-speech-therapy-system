@@ -43,3 +43,6 @@ build/
 # Operating System specific files
 .DS_Store
 Thumbs.db
+
+# Evaluation run history artifacts
+eval/reports/eval_report_*.json

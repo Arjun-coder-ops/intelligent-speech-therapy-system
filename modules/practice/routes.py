@@ -13,6 +13,8 @@ from modules.assessments.services import (
     calculate_word_level_accuracy,
     calculate_fluency
 )
+from modules.observability.metrics import metrics_collector
+import random
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -72,17 +74,22 @@ def extract_json_from_ai(text):
 def get_fallback_sentences():
     """Fetch 3 random sentences from the database or fall back to defaults"""
     try:
-        sentences = Sentence.query.order_by(db.func.random()).limit(3).all()
-        if sentences and len(sentences) >= 3:
-            return [
-                {
-                    "text": s.text,
-                    "difficulty": s.difficulty or "medium"
-                }
-                for s in sentences[:3]
-            ]
+        from sqlalchemy import inspect
+        engine = db.engine
+        inspector = inspect(engine)
+        if inspector.has_table("sentences"):
+            sentences = Sentence.query.order_by(db.func.random()).limit(3).all()
+            if sentences and len(sentences) >= 3:
+                return [
+                    {
+                        "text": s.text,
+                        "difficulty": s.difficulty or "medium"
+                    }
+                    for s in sentences[:3]
+                ]
     except Exception as e:
-        current_app.logger.warning(f"Database fallback query failed: {e}")
+        if current_app:
+            current_app.logger.warning(f"Database fallback query failed: {e}")
 
     return [
         {"text": "The quick brown fox jumps over the lazy dog.", "difficulty": "easy"},
@@ -122,9 +129,12 @@ def recommend_practice_sentences():
 
     # If OpenRouter is not configured, immediately return curated database sentences
     if not OPENROUTER_API_KEY or OPENROUTER_API_KEY.strip() == "":
+        metrics_collector.record_llm_fallback("not_configured")
         return jsonify({
             "sentences": get_fallback_sentences(),
             "source": "database",
+            "fallback": True,
+            "fallback_reason": "AI service not configured",
             "note": "AI service not configured, using database practice sentences"
         }), 200
 
@@ -158,30 +168,73 @@ def recommend_practice_sentences():
         "Content-Type": "application/json"
     }
 
-    try:
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=15
-        )
-        response.raise_for_status()
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-        parsed = extract_json_from_ai(content)
-    except Exception as e:
-        current_app.logger.warning(f"OpenRouter request failed: {e}. Falling back to database sentences.")
+    # Bounded retries with exponential backoff & jitter for transient failures
+    max_retries = 2
+    base_delay = 0.5
+    response = None
+    parsed = None
+    fallback_reason = None
+    start_llm = time.time()
+
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=15
+            )
+
+            # Check for transient rate limit or gateway error
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < max_retries:
+                    delay = (base_delay * (2 ** attempt)) + random.uniform(0.1, 0.3)
+                    time.sleep(delay)
+                    continue
+                else:
+                    response.raise_for_status()
+            elif response.status_code >= 400:
+                # Permanent client error (400, 401, 403) -> do not retry
+                response.raise_for_status()
+
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+            parsed = extract_json_from_ai(content)
+            break
+        except requests.exceptions.Timeout:
+            if attempt < max_retries:
+                delay = (base_delay * (2 ** attempt)) + random.uniform(0.1, 0.3)
+                time.sleep(delay)
+                continue
+            fallback_reason = "provider_timeout"
+        except requests.exceptions.HTTPError as he:
+            fallback_reason = f"http_{response.status_code}" if response is not None else "http_error"
+        except Exception as e:
+            fallback_reason = str(e)
+            break
+
+    llm_duration = time.time() - start_llm
+
+    if parsed is None:
+        metrics_collector.record_llm_request("failed", llm_duration)
+        metrics_collector.record_llm_fallback(fallback_reason or "unknown_failure")
         return jsonify({
             "sentences": get_fallback_sentences(),
             "source": "database",
+            "fallback": True,
+            "fallback_reason": fallback_reason or "AI service unavailable",
             "note": "AI service unavailable, using database sentences"
         }), 200
 
     sentences = parsed.get("sentences") if isinstance(parsed, dict) else None
     if not isinstance(sentences, list) or len(sentences) != 3:
+        metrics_collector.record_llm_request("schema_mismatch", llm_duration)
+        metrics_collector.record_llm_fallback("invalid_format")
         return jsonify({
             "sentences": get_fallback_sentences(),
             "source": "database",
+            "fallback": True,
+            "fallback_reason": "AI returned unexpected structure",
             "note": "AI returned unexpected format"
         }), 200
 
@@ -202,15 +255,21 @@ def recommend_practice_sentences():
             })
 
     if len(results) != 3:
+        metrics_collector.record_llm_request("insufficient_count", llm_duration)
+        metrics_collector.record_llm_fallback("insufficient_sentences")
         return jsonify({
             "sentences": get_fallback_sentences(),
             "source": "database",
+            "fallback": True,
+            "fallback_reason": "AI generated fewer than 3 valid sentences",
             "note": "AI returned insufficient sentences"
         }), 200
 
+    metrics_collector.record_llm_request("success", llm_duration)
     return jsonify({
         "sentences": results,
-        "source": "ai"
+        "source": "ai",
+        "fallback": False
     }), 200
 
 

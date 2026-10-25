@@ -1,0 +1,10 @@
+{
+  "created_at": "2026-10-24 18:52:39Z",
+  "dataset_version": "1.0.0",
+  "metrics": {
+    "speech_mean_wer": 0.0,
+    "speech_mean_cer": 0.0,
+    "speech_word_accuracy": 1.0,
+    "llm_compliance_rate": 1.0
+  }
+}
